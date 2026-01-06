@@ -1,0 +1,6 @@
+# 日志文件
+logs/
+
+# 编译产物
+monitor-agent
+monitor-agent.exe

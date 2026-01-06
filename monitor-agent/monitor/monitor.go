@@ -13,18 +13,19 @@ import (
 )
 
 type Monitor struct {
-	mu            sync.RWMutex
-	config        types.MonitorConfig
-	provider      provider.ProcProvider
-	metricsBuffer *buffer.RingBuffer[types.ProcessMetrics]
-	eventsBuffer  *buffer.RingBuffer[types.Event]
-	logger        *logger.JSONLLogger
-	targetPID     int32
-	running       bool
-	stopCh        chan struct{}
-	cpuExceedCnt  int
-	lastMetric    *types.ProcessMetrics
-	lastRestart   time.Time // 上次重启时间，用于冷却
+	mu             sync.RWMutex
+	config         types.MonitorConfig
+	provider       provider.ProcProvider
+	metricsBuffer  *buffer.RingBuffer[types.ProcessMetrics]
+	eventsBuffer   *buffer.RingBuffer[types.Event]
+	logger         *logger.JSONLLogger
+	targetPID      int32
+	running        bool
+	stopCh         chan struct{}
+	cpuExceedCnt   int
+	lastMetric     *types.ProcessMetrics
+	lastRestart    time.Time // 上次重启时间，用于冷却
+	waitingRestart bool      // 正在等待新进程启动
 }
 
 func New(cfg types.MonitorConfig, prov provider.ProcProvider) (*Monitor, error) {
@@ -137,6 +138,14 @@ func (m *Monitor) collect() {
 }
 
 func (m *Monitor) checkRules(metric types.ProcessMetrics) {
+	// 正在等待新进程启动，跳过规则检测
+	m.mu.RLock()
+	waiting := m.waitingRestart
+	m.mu.RUnlock()
+	if waiting {
+		return
+	}
+
 	// 进程退出检测
 	if !metric.Alive {
 		evt := types.Event{
@@ -220,21 +229,37 @@ func (m *Monitor) triggerRestart(reason string) {
 	}
 	m.addEvent(evt)
 
-	// 等待新进程启动后重新查找 PID
+	// 按进程名监控时，等待新进程启动后重新查找 PID
+	// 按 PID 监控时，进程死后停止监控（无法确定新进程）
 	if m.config.ProcessName != "" {
+		m.mu.Lock()
+		m.waitingRestart = true
+		m.mu.Unlock()
 		go m.waitAndRefindPID()
+	} else {
+		log.Printf("[INFO] monitoring by PID, stopping after restart (cannot track new process)")
+		m.mu.Lock()
+		m.waitingRestart = true // 停止规则检测，不再触发重启
+		m.mu.Unlock()
 	}
 }
 
 func (m *Monitor) waitAndRefindPID() {
-	time.Sleep(3 * time.Second)
+	defer func() {
+		m.mu.Lock()
+		m.waitingRestart = false
+		m.mu.Unlock()
+	}()
+
+	time.Sleep(2 * time.Second)
 	for i := 0; i < 10; i++ {
-		pid, err := m.provider.FindPIDByName(m.config.ProcessName)
-		if err == nil {
+		pids, err := m.provider.FindAllPIDsByName(m.config.ProcessName)
+		if err == nil && len(pids) > 0 {
+			// 取第一个找到的（通常是最新启动的）
 			m.mu.Lock()
-			m.targetPID = pid
+			m.targetPID = pids[0]
 			m.mu.Unlock()
-			log.Printf("[INFO] found new process pid=%d", pid)
+			log.Printf("[INFO] found new process pid=%d", pids[0])
 			return
 		}
 		time.Sleep(time.Second)
