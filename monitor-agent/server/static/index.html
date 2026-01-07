@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor Agent - 进程监控</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        h1 { color: #00d9ff; margin-bottom: 20px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: #16213e; border: none; color: #eee; cursor: pointer; border-radius: 5px; }
+        .tab.active { background: #00d9ff; color: #1a1a2e; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        .btn { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #00d9ff; color: #1a1a2e; }
+        .btn-danger { background: #ff4757; color: #fff; }
+        .btn-success { background: #2ed573; color: #1a1a2e; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        input[type="text"] { padding: 8px 12px; border: 1px solid #333; border-radius: 5px; background: #16213e; color: #eee; }
+        table { width: 100%; border-collapse: collapse; background: #16213e; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #0f3460; color: #00d9ff; cursor: pointer; user-select: none; }
+        th:hover { background: #1a5276; }
+        th .sort-indicator { color: #2ed573; }
+        tr:hover { background: #1f4068; }
+        .checkbox { width: 18px; height: 18px; cursor: pointer; }
+        .status { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
+        .status-running { background: #2ed573; color: #1a1a2e; }
+        .status-stopped { background: #ff4757; color: #fff; }
+        .monitor-status { padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; }
+        .monitor-status.running { background: #2ed57333; border: 1px solid #2ed573; }
+        .monitor-status.stopped { background: #ff475733; border: 1px solid #ff4757; }
+        .targets-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
+        .target-card { background: #16213e; padding: 15px; border-radius: 8px; min-width: 200px; }
+        .target-card h4 { color: #00d9ff; margin-bottom: 10px; }
+        .target-card .metric { display: flex; justify-content: space-between; margin: 5px 0; }
+        .target-card .metric-value { color: #2ed573; font-weight: bold; }
+        .search-box { flex: 1; max-width: 300px; }
+        .event-list { max-height: 300px; overflow-y: auto; }
+        .event-item { padding: 10px; border-bottom: 1px solid #333; }
+        .event-item .time { color: #888; font-size: 12px; }
+        .event-item .type { font-weight: bold; }
+        .event-item .type-exit { color: #ff4757; }
+        .event-item .type-restart { color: #ffa502; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ Monitor Agent</h1>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showPanel('processes')">进程列表</button>
+            <button class="tab" onclick="showPanel('monitor')">监控面板</button>
+            <button class="tab" onclick="showPanel('events')">事件日志</button>
+        </div>
+
+        <!-- 进程列表面板 -->
+        <div id="processes" class="panel active">
+            <div class="toolbar">
+                <input type="text" class="search-box" id="searchInput" placeholder="搜索进程名..." oninput="filterProcesses()">
+                <button class="btn btn-primary" onclick="refreshProcesses()">🔄 刷新</button>
+                <button class="btn btn-success" onclick="addSelectedToMonitor()">➕ 添加到监控</button>
+                <span id="selectedCount" style="color: #888;">已选择: 0</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" class="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                        <th data-sort="pid" onclick="sortProcesses('pid')">PID<span class="sort-indicator"> ▼</span></th>
+                        <th data-sort="name" onclick="sortProcesses('name')">进程名<span class="sort-indicator"></span></th>
+                        <th data-sort="cpu" onclick="sortProcesses('cpu')">CPU %<span class="sort-indicator"></span></th>
+                        <th data-sort="mem" onclick="sortProcesses('mem')">内存 (MB)<span class="sort-indicator"></span></th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="processTable"></tbody>
+            </table>
+        </div>
+
+        <!-- 监控面板 -->
+        <div id="monitor" class="panel">
+            <div class="monitor-status stopped" id="monitorStatus">
+                <strong>监控状态:</strong> <span id="statusText">已停止</span>
+                <button class="btn btn-success" id="startBtn" onclick="startMonitor()" style="margin-left: 20px;">▶ 启动</button>
+                <button class="btn btn-danger" id="stopBtn" onclick="stopMonitor()" style="margin-left: 10px; display: none;">⏹ 停止</button>
+            </div>
+            <h3>监控目标</h3>
+            <div class="targets-list" id="targetsList"></div>
+        </div>
+
+        <!-- 事件日志面板 -->
+        <div id="events" class="panel">
+            <div class="toolbar">
+                <button class="btn btn-primary" onclick="refreshEvents()">🔄 刷新</button>
+            </div>
+            <div class="event-list" id="eventList"></div>
+        </div>
+    </div>
+
+    <script>
+        let allProcesses = [];
+        let selectedPids = new Set();
+        let refreshInterval = null;
+        let processRefreshInterval = null;
+        let eventsRefreshInterval = null;
+        let sortColumn = 'pid';
+        let sortAsc = false; // 默认降序（从高到低）
+
+        // 切换面板
+        function showPanel(name) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(name).classList.add('active');
+            event.target.classList.add('active');
+            
+            stopAllIntervals();
+            
+            if (name === 'processes') {
+                startProcessAutoRefresh();
+            } else if (name === 'monitor') {
+                refreshTargets();
+                startAutoRefresh();
+            } else if (name === 'events') {
+                refreshEvents();
+                startEventsAutoRefresh();
+            }
+        }
+
+        function stopAllIntervals() {
+            stopAutoRefresh();
+            stopProcessAutoRefresh();
+            stopEventsAutoRefresh();
+        }
+
+        // 排序函数
+        function sortProcesses(column) {
+            if (sortColumn === column) {
+                sortAsc = !sortAsc; // 同列切换排序方向
+            } else {
+                sortColumn = column;
+                sortAsc = false; // 新列默认降序（从高到低）
+            }
+            updateSortIndicators();
+            renderProcesses(getFilteredProcesses());
+        }
+
+        function updateSortIndicators() {
+            document.querySelectorAll('th[data-sort]').forEach(th => {
+                const col = th.dataset.sort;
+                const indicator = th.querySelector('.sort-indicator');
+                if (col === sortColumn) {
+                    indicator.textContent = sortAsc ? ' ▲' : ' ▼';
+                } else {
+                    indicator.textContent = '';
+                }
+            });
+        }
+
+        function compareProcesses(a, b) {
+            let valA, valB;
+            switch (sortColumn) {
+                case 'pid': valA = a.pid; valB = b.pid; break;
+                case 'name': valA = (a.name || '').toLowerCase(); valB = (b.name || '').toLowerCase(); break;
+                case 'cpu': valA = a.cpu_pct; valB = b.cpu_pct; break;
+                case 'mem': valA = a.rss_bytes; valB = b.rss_bytes; break;
+                default: valA = a.pid; valB = b.pid;
+            }
+            if (valA < valB) return sortAsc ? -1 : 1;
+            if (valA > valB) return sortAsc ? 1 : -1;
+            return 0;
+        }
+
+        function getFilteredProcesses() {
+            const keyword = document.getElementById('searchInput').value.toLowerCase();
+            let filtered = allProcesses;
+            if (keyword) {
+                filtered = allProcesses.filter(p => 
+                    p.name && p.name.toLowerCase().includes(keyword) || 
+                    String(p.pid).includes(keyword)
+                );
+            }
+            return [...filtered].sort(compareProcesses);
+        }
+
+        // 获取进程列表
+        async function refreshProcesses() {
+            try {
+                const res = await fetch('/api/processes');
+                allProcesses = await res.json();
+                renderProcesses(getFilteredProcesses());
+            } catch (e) {
+                console.error('Failed to fetch processes:', e);
+            }
+        }
+
+        // 进程列表自动刷新
+        function startProcessAutoRefresh() {
+            if (processRefreshInterval) return;
+            refreshProcesses();
+            processRefreshInterval = setInterval(refreshProcesses, 2000);
+        }
+
+        function stopProcessAutoRefresh() {
+            if (processRefreshInterval) {
+                clearInterval(processRefreshInterval);
+                processRefreshInterval = null;
+            }
+        }
+
+        // 渲染进程表格
+        function renderProcesses(processes) {
+            const tbody = document.getElementById('processTable');
+            tbody.innerHTML = processes.map(p => `
+                <tr>
+                    <td><input type="checkbox" class="checkbox" data-pid="${p.pid}" ${selectedPids.has(p.pid) ? 'checked' : ''} onchange="toggleSelect(${p.pid})"></td>
+                    <td>${p.pid}</td>
+                    <td>${p.name || '-'}</td>
+                    <td>${p.cpu_pct.toFixed(2)}</td>
+                    <td>${(p.rss_bytes / 1024 / 1024).toFixed(2)}</td>
+                    <td><span class="status status-running">${p.status || 'running'}</span></td>
+                </tr>
+            `).join('');
+            updateSelectedCount();
+        }
+
+        // 搜索过滤
+        function filterProcesses() {
+            renderProcesses(getFilteredProcesses());
+        }
+
+        // 选择/取消选择
+        function toggleSelect(pid) {
+            if (selectedPids.has(pid)) {
+                selectedPids.delete(pid);
+            } else {
+                selectedPids.add(pid);
+            }
+            updateSelectedCount();
+        }
+
+        function toggleSelectAll() {
+            const checked = document.getElementById('selectAll').checked;
+            const checkboxes = document.querySelectorAll('#processTable .checkbox');
+            checkboxes.forEach(cb => {
+                const pid = parseInt(cb.dataset.pid);
+                if (checked) {
+                    selectedPids.add(pid);
+                } else {
+                    selectedPids.delete(pid);
+                }
+                cb.checked = checked;
+            });
+            updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+            document.getElementById('selectedCount').textContent = `已选择: ${selectedPids.size}`;
+        }
+
+        // 添加到监控
+        async function addSelectedToMonitor() {
+            if (selectedPids.size === 0) {
+                alert('请先选择要监控的进程');
+                return;
+            }
+            for (const pid of selectedPids) {
+                const proc = allProcesses.find(p => p.pid === pid);
+                try {
+                    await fetch('/api/monitor/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pid: pid, name: proc?.name || '' })
+                    });
+                } catch (e) {
+                    console.error('Failed to add target:', e);
+                }
+            }
+            // 自动启动监控
+            await fetch('/api/monitor/start', { method: 'POST' });
+            
+            selectedPids.clear();
+            updateSelectedCount();
+            document.querySelectorAll('#processTable .checkbox').forEach(cb => cb.checked = false);
+            
+            // 切换到监控面板
+            document.querySelectorAll('.tab')[1].click();
+        }
+
+        // 获取监控目标
+        async function refreshTargets() {
+            try {
+                const [targetsRes, statusRes, metricsRes] = await Promise.all([
+                    fetch('/api/monitor/targets'),
+                    fetch('/api/status'),
+                    fetch('/api/metrics/latest')
+                ]);
+                const targets = await targetsRes.json();
+                const status = await statusRes.json();
+                const metrics = await metricsRes.json();
+                
+                renderTargets(targets, metrics);
+                updateMonitorStatus(status.running);
+            } catch (e) {
+                console.error('Failed to fetch targets:', e);
+            }
+        }
+
+        function renderTargets(targets, metrics) {
+            const container = document.getElementById('targetsList');
+            if (!targets || targets.length === 0) {
+                container.innerHTML = '<p style="color: #888;">暂无监控目标，请从进程列表添加</p>';
+                return;
+            }
+            container.innerHTML = targets.map(t => {
+                const m = metrics[t.pid];
+                return `
+                    <div class="target-card">
+                        <h4>${t.name || 'Unknown'}</h4>
+                        <div class="metric"><span>PID</span><span class="metric-value">${t.pid}</span></div>
+                        <div class="metric"><span>CPU</span><span class="metric-value">${m ? m.cpu_pct.toFixed(2) + '%' : '-'}</span></div>
+                        <div class="metric"><span>内存</span><span class="metric-value">${m ? (m.rss_bytes / 1024 / 1024).toFixed(2) + ' MB' : '-'}</span></div>
+                        <div class="metric"><span>状态</span><span class="metric-value">${m?.alive ? '🟢 运行' : '🔴 停止'}</span></div>
+                        <button class="btn btn-danger" onclick="removeTarget(${t.pid})" style="margin-top: 10px; width: 100%;">移除</button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateMonitorStatus(running) {
+            const statusEl = document.getElementById('monitorStatus');
+            const statusText = document.getElementById('statusText');
+            const startBtn = document.getElementById('startBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            
+            if (running) {
+                statusEl.className = 'monitor-status running';
+                statusText.textContent = '运行中';
+                startBtn.style.display = 'none';
+                stopBtn.style.display = 'inline-block';
+            } else {
+                statusEl.className = 'monitor-status stopped';
+                statusText.textContent = '已停止';
+                startBtn.style.display = 'inline-block';
+                stopBtn.style.display = 'none';
+            }
+        }
+
+        async function startMonitor() {
+            await fetch('/api/monitor/start', { method: 'POST' });
+            refreshTargets();
+        }
+
+        async function stopMonitor() {
+            await fetch('/api/monitor/stop', { method: 'POST' });
+            refreshTargets();
+        }
+
+        async function removeTarget(pid) {
+            await fetch('/api/monitor/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pid: pid })
+            });
+            refreshTargets();
+        }
+
+        // 事件日志
+        async function refreshEvents() {
+            try {
+                const res = await fetch('/api/events?n=50');
+                const events = await res.json();
+                renderEvents(events);
+            } catch (e) {
+                console.error('Failed to fetch events:', e);
+            }
+        }
+
+        function startEventsAutoRefresh() {
+            if (eventsRefreshInterval) return;
+            refreshEvents();
+            eventsRefreshInterval = setInterval(refreshEvents, 2000);
+        }
+
+        function stopEventsAutoRefresh() {
+            if (eventsRefreshInterval) {
+                clearInterval(eventsRefreshInterval);
+                eventsRefreshInterval = null;
+            }
+        }
+
+        function renderEvents(events) {
+            const container = document.getElementById('eventList');
+            if (!events || events.length === 0) {
+                container.innerHTML = '<p style="color: #888; padding: 20px;">暂无事件</p>';
+                return;
+            }
+            container.innerHTML = events.reverse().map(e => `
+                <div class="event-item">
+                    <span class="time">${new Date(e.timestamp).toLocaleString()}</span>
+                    <span class="type type-${e.type}">[${e.type.toUpperCase()}]</span>
+                    <span>PID: ${e.pid} - ${e.message}</span>
+                </div>
+            `).join('');
+        }
+
+        // 自动刷新
+        function startAutoRefresh() {
+            if (refreshInterval) return;
+            refreshInterval = setInterval(refreshTargets, 2000);
+        }
+
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+
+        // 初始化
+        startProcessAutoRefresh();
+    </script>
+</body>
+</html>

@@ -87,3 +87,34 @@ func (p *linuxProvider) KillProcess(pid int32) error {
 func (p *linuxProvider) ExecuteRestart(cmd string) error {
 	return exec.Command("sh", "-c", cmd).Start()
 }
+
+func (p *linuxProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, err
+	}
+	var result []types.ProcessInfo
+	for _, proc := range procs {
+		name, _ := proc.Name()
+		cpu, _ := proc.CPUPercent()
+		mem, _ := proc.MemoryInfo()
+		status, _ := proc.Status()
+
+		var rss uint64
+		if mem != nil {
+			rss = mem.RSS
+		}
+		statusStr := ""
+		if len(status) > 0 {
+			statusStr = status[0]
+		}
+		result = append(result, types.ProcessInfo{
+			PID:      proc.Pid,
+			Name:     name,
+			CPUPct:   cpu,
+			RSSBytes: rss,
+			Status:   statusStr,
+		})
+	}
+	return result, nil
+}

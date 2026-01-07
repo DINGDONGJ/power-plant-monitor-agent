@@ -16,4 +16,6 @@ type ProcProvider interface {
 	KillProcess(pid int32) error
 	// ExecuteRestart 执行重启命令
 	ExecuteRestart(cmd string) error
+	// ListAllProcesses 列出系统所有进程
+	ListAllProcesses() ([]types.ProcessInfo, error)
 }

@@ -41,3 +41,30 @@ type StatusResponse struct {
 	CurrentMetric *ProcessMetrics `json:"current_metric,omitempty"`
 	Config        MonitorConfig  `json:"config"`
 }
+
+// ProcessInfo 系统进程信息（用于列表展示）
+type ProcessInfo struct {
+	PID      int32   `json:"pid"`
+	Name     string  `json:"name"`
+	CPUPct   float64 `json:"cpu_pct"`
+	RSSBytes uint64  `json:"rss_bytes"`
+	Status   string  `json:"status"`
+}
+
+// MonitorTarget 监控目标
+type MonitorTarget struct {
+	PID        int32  `json:"pid"`
+	Name       string `json:"name"`
+	RestartCmd string `json:"restart_cmd,omitempty"`
+}
+
+// MultiMonitorConfig 多进程监控配置
+type MultiMonitorConfig struct {
+	Targets          []MonitorTarget `json:"targets"`
+	CPUThreshold     float64         `json:"cpu_threshold"`
+	CPUExceedCount   int             `json:"cpu_exceed_count"`
+	SampleInterval   int             `json:"sample_interval"` // 采样间隔（秒）
+	MetricsBufferLen int             `json:"metrics_buffer_len"`
+	EventsBufferLen  int             `json:"events_buffer_len"`
+	LogDir           string          `json:"log_dir"`
+}
