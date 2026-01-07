@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/process"
 	"monitor-agent/types"
 )
@@ -117,4 +118,36 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 		})
 	}
 	return result, nil
+}
+
+func (p *windowsProvider) GetSystemMetrics() (*types.SystemMetrics, error) {
+	memInfo, _ := mem.VirtualMemory()
+	
+	// 遍历所有进程，累加 CPU 和内存
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, err
+	}
+	
+	var totalCPU float64
+	var totalMem uint64
+	for _, proc := range procs {
+		cpu, _ := proc.CPUPercent()
+		totalCPU += cpu
+		if memInfo, _ := proc.MemoryInfo(); memInfo != nil {
+			totalMem += memInfo.RSS
+		}
+	}
+
+	var memPct float64
+	if memInfo.Total > 0 {
+		memPct = float64(totalMem) / float64(memInfo.Total) * 100.0
+	}
+
+	return &types.SystemMetrics{
+		CPUPercent:    totalCPU,
+		MemoryTotal:   memInfo.Total,
+		MemoryUsed:    totalMem,
+		MemoryPercent: memPct,
+	}, nil
 }

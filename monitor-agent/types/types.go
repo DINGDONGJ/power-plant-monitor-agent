@@ -68,3 +68,11 @@ type MultiMonitorConfig struct {
 	EventsBufferLen  int             `json:"events_buffer_len"`
 	LogDir           string          `json:"log_dir"`
 }
+
+// SystemMetrics 系统指标
+type SystemMetrics struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryTotal   uint64  `json:"memory_total"`
+	MemoryUsed    uint64  `json:"memory_used"`
+	MemoryPercent float64 `json:"memory_percent"`
+}

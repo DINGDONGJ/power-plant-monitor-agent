@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -113,13 +114,22 @@ func (m *MultiMonitor) RemoveTarget(pid int32) {
 	log.Printf("[INFO] Removed monitor target: PID=%d", pid)
 }
 
-// GetTargets 获取所有监控目标
+// GetTargets 获取所有监控目标（按 PID 排序）
 func (m *MultiMonitor) GetTargets() []types.MonitorTarget {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var result []types.MonitorTarget
-	for _, state := range m.targets {
-		result = append(result, state.target)
+	
+	// 收集所有 PID 并排序
+	pids := make([]int32, 0, len(m.targets))
+	for pid := range m.targets {
+		pids = append(pids, pid)
+	}
+	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+	
+	// 按排序后的顺序返回
+	result := make([]types.MonitorTarget, 0, len(pids))
+	for _, pid := range pids {
+		result = append(result, m.targets[pid].target)
 	}
 	return result
 }
@@ -298,4 +308,9 @@ func (m *MultiMonitor) IsRunning() bool {
 // ListAllProcesses 列出系统所有进程
 func (m *MultiMonitor) ListAllProcesses() ([]types.ProcessInfo, error) {
 	return m.provider.ListAllProcesses()
+}
+
+// GetSystemMetrics 获取系统指标
+func (m *MultiMonitor) GetSystemMetrics() (*types.SystemMetrics, error) {
+	return m.provider.GetSystemMetrics()
 }

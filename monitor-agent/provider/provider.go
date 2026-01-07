@@ -18,4 +18,6 @@ type ProcProvider interface {
 	ExecuteRestart(cmd string) error
 	// ListAllProcesses 列出系统所有进程
 	ListAllProcesses() ([]types.ProcessInfo, error)
+	// GetSystemMetrics 获取系统指标
+	GetSystemMetrics() (*types.SystemMetrics, error)
 }

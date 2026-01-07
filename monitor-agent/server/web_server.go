@@ -34,6 +34,7 @@ func NewWebServer(mm *monitor.MultiMonitor) *WebServer {
 	s.mux.HandleFunc("/api/metrics/latest", s.handleLatestMetrics)
 	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/status", s.handleStatus)
+	s.mux.HandleFunc("/api/system", s.handleSystem)
 
 	// 静态文件
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -178,4 +179,14 @@ func (s *WebServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"running": s.multiMonitor.IsRunning(),
 		"targets": len(s.multiMonitor.GetTargets()),
 	})
+}
+
+// GET /api/system - 获取系统指标
+func (s *WebServer) handleSystem(w http.ResponseWriter, r *http.Request) {
+	metrics, err := s.multiMonitor.GetSystemMetrics()
+	if err != nil {
+		s.errorResponse(w, 500, err.Error())
+		return
+	}
+	s.jsonResponse(w, metrics)
 }
