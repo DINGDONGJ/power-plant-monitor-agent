@@ -38,24 +38,26 @@
             border: 1px solid #333;
             padding: 10px;
         }
-        .resource-box .title { color: #00ffff; font-weight: bold; margin-bottom: 8px; }
-        .progress-bar {
-            height: 20px;
-            background: #1a1a1a;
-            border: 1px solid #333;
+        .resource-box .title { 
+            color: #00ffff; 
+            font-weight: bold; 
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .resource-box .current-value { color: #00ff00; font-size: 14px; }
+        .chart-container {
             position: relative;
-            margin-bottom: 5px;
+            height: 100px;
+            background: #111;
+            border: 1px solid #333;
         }
-        .progress-fill { height: 100%; transition: width 0.3s, background-color 0.3s; }
-        .progress-fill.level-low { background: #00ff00; }
-        .progress-fill.level-mid { background: #ffff00; }
-        .progress-fill.level-high { background: #ff6600; }
-        .progress-fill.level-critical { background: #ff0000; }
-        .progress-text {
-            position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-            color: #fff; font-size: 12px; text-shadow: 1px 1px 1px #000;
+        .chart-container canvas {
+            width: 100%;
+            height: 100%;
         }
-        .resource-info { display: flex; justify-content: space-between; color: #888; font-size: 12px; }
+        .resource-info { display: flex; justify-content: space-between; color: #888; font-size: 12px; margin-top: 5px; }
         
         .tabs { display: flex; background: #1a1a1a; border: 1px solid #333; border-bottom: none; }
         .tab {
@@ -160,20 +162,24 @@
         
         <div class="system-panel">
             <div class="resource-box">
-                <div class="title">处理器 (CPU)</div>
-                <div class="progress-bar">
-                    <div class="progress-fill level-low" id="cpuBar" style="width: 0%"></div>
-                    <span class="progress-text" id="cpuText">0%</span>
+                <div class="title">
+                    <span>处理器 (CPU)</span>
+                    <span class="current-value" id="cpuValue">0%</span>
                 </div>
-                <div class="resource-info"><span>使用率</span><span id="cpuInfo">-</span></div>
+                <div class="chart-container">
+                    <canvas id="cpuChart"></canvas>
+                </div>
+                <div class="resource-info"><span>60秒历史</span><span id="cpuInfo">-</span></div>
             </div>
             <div class="resource-box">
-                <div class="title">内存 (RAM)</div>
-                <div class="progress-bar">
-                    <div class="progress-fill level-low" id="memBar" style="width: 0%"></div>
-                    <span class="progress-text" id="memText">0%</span>
+                <div class="title">
+                    <span>内存 (RAM)</span>
+                    <span class="current-value" id="memValue">0%</span>
                 </div>
-                <div class="resource-info"><span>已用 / 总计</span><span id="memInfo">-</span></div>
+                <div class="chart-container">
+                    <canvas id="memChart"></canvas>
+                </div>
+                <div class="resource-info"><span>60秒历史</span><span id="memInfo">-</span></div>
             </div>
         </div>
         
@@ -232,6 +238,12 @@
         let sortColumn = 'cpu';
         let sortAsc = false;
         let expandedGroups = new Set();
+        
+        // 时间序列数据（保存60个数据点，每2秒一个）
+        const MAX_DATA_POINTS = 60;
+        let cpuHistory = [];
+        let memHistory = [];
+        let lastMemInfo = { used: 0, total: 0 };
 
         // 列定义：key, 标题, 宽度, 是否可排序
         const allColumns = [
@@ -407,21 +419,122 @@
                 const res = await fetch('/api/system');
                 const data = await res.json();
                 
-                const cpuPct = data.cpu_percent.toFixed(1);
-                const cpuBar = document.getElementById('cpuBar');
-                cpuBar.style.width = cpuPct + '%';
-                cpuBar.className = 'progress-fill ' + getLevel(data.cpu_percent);
-                document.getElementById('cpuText').textContent = cpuPct + '%';
-                document.getElementById('cpuInfo').textContent = cpuPct + '% 已使用';
+                // 更新时间序列数据
+                cpuHistory.push(data.cpu_percent);
+                memHistory.push(data.memory_percent);
+                if (cpuHistory.length > MAX_DATA_POINTS) cpuHistory.shift();
+                if (memHistory.length > MAX_DATA_POINTS) memHistory.shift();
                 
-                const memPct = data.memory_percent.toFixed(1);
-                const memBar = document.getElementById('memBar');
-                memBar.style.width = memPct + '%';
-                memBar.className = 'progress-fill ' + getLevel(data.memory_percent);
-                document.getElementById('memText').textContent = memPct + '%';
+                // 更新当前值显示
+                document.getElementById('cpuValue').textContent = data.cpu_percent.toFixed(2) + '%';
+                document.getElementById('memValue').textContent = data.memory_percent.toFixed(2) + '%';
+                document.getElementById('cpuInfo').textContent = '当前: ' + data.cpu_percent.toFixed(2) + '%';
                 document.getElementById('memInfo').textContent = formatBytes(data.memory_used) + ' / ' + formatBytes(data.memory_total);
+                lastMemInfo = { used: data.memory_used, total: data.memory_total };
+                
+                // 绘制图表
+                drawChart('cpuChart', cpuHistory, '#00ff00', '#003300');
+                drawChart('memChart', memHistory, '#00ffff', '#003333');
             } catch (e) {
                 console.error('获取系统指标失败:', e);
+            }
+        }
+        
+        function drawChart(canvasId, data, lineColor, fillColor) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const rect = canvas.parentElement.getBoundingClientRect();
+            
+            // 设置 canvas 实际尺寸
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            
+            const width = canvas.width;
+            const height = canvas.height;
+            const padding = { top: 5, right: 10, bottom: 5, left: 30 };
+            const chartWidth = width - padding.left - padding.right;
+            const chartHeight = height - padding.top - padding.bottom;
+            
+            // 清空画布
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, width, height);
+            
+            // 绘制网格线和Y轴标签
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.lineWidth = 1;
+            ctx.fillStyle = '#555';
+            ctx.font = '10px Consolas';
+            ctx.textAlign = 'right';
+            
+            // 水平网格线
+            for (let i = 0; i <= 4; i++) {
+                const y = padding.top + (chartHeight * i / 4);
+                const value = 100 - (i * 25);
+                
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(width - padding.right, y);
+                ctx.stroke();
+                
+                ctx.fillText(value + '%', padding.left - 3, y + 3);
+            }
+            
+            // 垂直网格线（每10个数据点一条）
+            for (let i = 0; i <= MAX_DATA_POINTS; i += 10) {
+                const x = padding.left + (i / MAX_DATA_POINTS) * chartWidth;
+                ctx.beginPath();
+                ctx.moveTo(x, padding.top);
+                ctx.lineTo(x, padding.top + chartHeight);
+                ctx.stroke();
+            }
+            
+            if (data.length < 1) return;
+            
+            // Steam 风格：数据从右向左滚动，最新数据在最右边
+            // 计算点的位置，数据不足时从右边开始绘制
+            const startX = padding.left + chartWidth - ((data.length - 1) / (MAX_DATA_POINTS - 1)) * chartWidth;
+            const stepX = chartWidth / (MAX_DATA_POINTS - 1);
+            
+            const points = data.map((val, idx) => ({
+                x: startX + idx * stepX,
+                y: padding.top + chartHeight - (val / 100) * chartHeight
+            }));
+            
+            // 创建渐变填充
+            const gradient = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartHeight);
+            gradient.addColorStop(0, fillColor);
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            
+            // 绘制填充区域
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, padding.top + chartHeight);
+            points.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.lineTo(points[points.length - 1].x, padding.top + chartHeight);
+            ctx.closePath();
+            ctx.fillStyle = gradient;
+            ctx.fill();
+            
+            // 绘制折线（带发光效果）
+            ctx.shadowColor = lineColor;
+            ctx.shadowBlur = 4;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            points.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.strokeStyle = lineColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            
+            // 绘制最新值的点（最右边）
+            if (points.length > 0) {
+                const lastPoint = points[points.length - 1];
+                ctx.beginPath();
+                ctx.arc(lastPoint.x, lastPoint.y, 4, 0, Math.PI * 2);
+                ctx.fillStyle = lineColor;
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
             }
         }
 

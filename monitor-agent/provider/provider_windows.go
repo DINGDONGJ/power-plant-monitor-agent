@@ -209,6 +209,6 @@ func (p *windowsProvider) GetSystemMetrics() (*types.SystemMetrics, error) {
 		CPUPercent:    cpuPct,
 		MemoryTotal:   memInfo.Total,
 		MemoryUsed:    memInfo.Used,
-		MemoryPercent: memInfo.UsedPercent,
+		MemoryPercent: float64(memInfo.Used) / float64(memInfo.Total) * 100,
 	}, nil
 }
