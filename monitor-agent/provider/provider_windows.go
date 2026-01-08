@@ -5,16 +5,31 @@ package provider
 import (
 	"fmt"
 	"os/exec"
+	"sync"
+	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/process"
 	"monitor-agent/types"
 )
 
-type windowsProvider struct{}
+// 磁盘 IO 采样状态
+type ioSample struct {
+	totalBytes uint64
+	sampleTime time.Time
+	lastRate   float64
+}
+
+type windowsProvider struct {
+	ioSamplesMu sync.RWMutex
+	ioSamples   map[int32]*ioSample
+}
 
 func New() ProcProvider {
-	return &windowsProvider{}
+	return &windowsProvider{
+		ioSamples: make(map[int32]*ioSample),
+	}
 }
 
 func (p *windowsProvider) FindAllPIDsByName(name string) ([]int32, error) {
@@ -51,18 +66,18 @@ func (p *windowsProvider) GetMetrics(pid int32) (*types.ProcessMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
-	cpu, _ := proc.CPUPercent()
-	mem, _ := proc.MemoryInfo()
+	cpuPct, _ := proc.CPUPercent()
+	memInfo, _ := proc.MemoryInfo()
 	name, _ := proc.Name()
 
 	var rss uint64
-	if mem != nil {
-		rss = mem.RSS
+	if memInfo != nil {
+		rss = memInfo.RSS
 	}
 	return &types.ProcessMetrics{
 		PID:      pid,
 		Name:     name,
-		CPUPct:   cpu,
+		CPUPct:   cpuPct,
 		RSSBytes: rss,
 		Alive:    true,
 	}, nil
@@ -89,65 +104,111 @@ func (p *windowsProvider) ExecuteRestart(cmd string) error {
 	return exec.Command("cmd", "/C", cmd).Start()
 }
 
+// calcDiskIORate 计算磁盘 IO 速率 (B/s)
+func (p *windowsProvider) calcDiskIORate(pid int32, currentTotal uint64) float64 {
+	now := time.Now()
+
+	p.ioSamplesMu.Lock()
+	defer p.ioSamplesMu.Unlock()
+
+	sample, exists := p.ioSamples[pid]
+	if !exists {
+		p.ioSamples[pid] = &ioSample{
+			totalBytes: currentTotal,
+			sampleTime: now,
+			lastRate:   0,
+		}
+		return 0
+	}
+
+	deltaTime := now.Sub(sample.sampleTime).Seconds()
+	if deltaTime < 0.5 {
+		return sample.lastRate
+	}
+
+	deltaBytes := currentTotal - sample.totalBytes
+	rate := float64(deltaBytes) / deltaTime
+
+	sample.totalBytes = currentTotal
+	sample.sampleTime = now
+	sample.lastRate = rate
+
+	return rate
+}
+
 func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 	procs, err := process.Processes()
 	if err != nil {
 		return nil, err
 	}
+
+	alivePids := make(map[int32]bool)
 	var result []types.ProcessInfo
+
 	for _, proc := range procs {
+		alivePids[proc.Pid] = true
+
 		name, _ := proc.Name()
-		cpu, _ := proc.CPUPercent()
-		mem, _ := proc.MemoryInfo()
+		cpuPct, _ := proc.CPUPercent()
+		memInfo, _ := proc.MemoryInfo()
 		status, _ := proc.Status()
+		username, _ := proc.Username()
+		cmdline, _ := proc.Cmdline()
+		ioCounters, _ := proc.IOCounters()
 
 		var rss uint64
-		if mem != nil {
-			rss = mem.RSS
+		if memInfo != nil {
+			rss = memInfo.RSS
 		}
 		statusStr := ""
 		if len(status) > 0 {
 			statusStr = status[0]
 		}
+
+		// 计算磁盘 IO 速率
+		var diskIO float64
+		if ioCounters != nil {
+			totalIO := ioCounters.ReadBytes + ioCounters.WriteBytes
+			diskIO = p.calcDiskIORate(proc.Pid, totalIO)
+		}
+
 		result = append(result, types.ProcessInfo{
 			PID:      proc.Pid,
 			Name:     name,
-			CPUPct:   cpu,
+			CPUPct:   cpuPct,
 			RSSBytes: rss,
 			Status:   statusStr,
+			Username: username,
+			Cmdline:  cmdline,
+			DiskIO:   diskIO,
 		})
 	}
+
+	// 清理已退出进程的采样数据
+	p.ioSamplesMu.Lock()
+	for pid := range p.ioSamples {
+		if !alivePids[pid] {
+			delete(p.ioSamples, pid)
+		}
+	}
+	p.ioSamplesMu.Unlock()
+
 	return result, nil
 }
 
 func (p *windowsProvider) GetSystemMetrics() (*types.SystemMetrics, error) {
+	cpuPercent, _ := cpu.Percent(time.Second, false)
 	memInfo, _ := mem.VirtualMemory()
-	
-	// 遍历所有进程，累加 CPU 和内存
-	procs, err := process.Processes()
-	if err != nil {
-		return nil, err
-	}
-	
-	var totalCPU float64
-	var totalMem uint64
-	for _, proc := range procs {
-		cpu, _ := proc.CPUPercent()
-		totalCPU += cpu
-		if memInfo, _ := proc.MemoryInfo(); memInfo != nil {
-			totalMem += memInfo.RSS
-		}
-	}
 
-	var memPct float64
-	if memInfo.Total > 0 {
-		memPct = float64(totalMem) / float64(memInfo.Total) * 100.0
+	var cpuPct float64
+	if len(cpuPercent) > 0 {
+		cpuPct = cpuPercent[0]
 	}
 
 	return &types.SystemMetrics{
-		CPUPercent:    totalCPU,
+		CPUPercent:    cpuPct,
 		MemoryTotal:   memInfo.Total,
-		MemoryUsed:    totalMem,
-		MemoryPercent: memPct,
+		MemoryUsed:    memInfo.Used,
+		MemoryPercent: memInfo.UsedPercent,
 	}, nil
 }

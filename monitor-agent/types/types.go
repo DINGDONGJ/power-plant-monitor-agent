@@ -49,6 +49,9 @@ type ProcessInfo struct {
 	CPUPct   float64 `json:"cpu_pct"`
 	RSSBytes uint64  `json:"rss_bytes"`
 	Status   string  `json:"status"`
+	Username string  `json:"username"` // 发布者/用户
+	Cmdline  string  `json:"cmdline"`  // 命令行
+	DiskIO   float64 `json:"disk_io"`  // 磁盘速率 (B/s)
 }
 
 // MonitorTarget 监控目标

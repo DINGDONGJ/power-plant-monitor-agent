@@ -114,6 +114,15 @@ func (m *MultiMonitor) RemoveTarget(pid int32) {
 	log.Printf("[INFO] Removed monitor target: PID=%d", pid)
 }
 
+// RemoveAllTargets 移除所有监控目标
+func (m *MultiMonitor) RemoveAllTargets() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.targets = make(map[int32]*targetState)
+	m.metricsBuffers = make(map[int32]*buffer.RingBuffer[types.ProcessMetrics])
+	log.Printf("[INFO] Removed all monitor targets")
+}
+
 // GetTargets 获取所有监控目标（按 PID 排序）
 func (m *MultiMonitor) GetTargets() []types.MonitorTarget {
 	m.mu.RLock()
