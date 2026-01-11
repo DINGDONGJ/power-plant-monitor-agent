@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -28,11 +30,13 @@ type MultiMonitor struct {
 }
 
 type targetState struct {
-	target       types.MonitorTarget
-	cpuExceedCnt int
-	lastRestart  time.Time
-	lastMetric   *types.ProcessMetrics
-	exitReported bool // 是否已报告退出事件
+	target        types.MonitorTarget
+	cpuExceedCnt  int
+	memExceedCnt  int
+	lastRestart   time.Time
+	lastMetric    *types.ProcessMetrics
+	exitReported  bool // 是否已报告退出事件
+	restartCount  int  // 重启次数统计
 }
 
 func NewMultiMonitor(cfg types.MultiMonitorConfig, prov provider.ProcProvider) (*MultiMonitor, error) {
@@ -121,6 +125,41 @@ func (m *MultiMonitor) RemoveAllTargets() {
 	m.targets = make(map[int32]*targetState)
 	m.metricsBuffers = make(map[int32]*buffer.RingBuffer[types.ProcessMetrics])
 	log.Printf("[INFO] Removed all monitor targets")
+}
+
+// UpdateTarget 更新监控目标配置
+func (m *MultiMonitor) UpdateTarget(target types.MonitorTarget) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	state, exists := m.targets[target.PID]
+	if !exists {
+		return fmt.Errorf("target PID %d not found", target.PID)
+	}
+	
+	// 保留原有状态，只更新配置
+	state.target = target
+	log.Printf("[INFO] Updated monitor target: PID=%d Name=%s AutoRestart=%v CPUThreshold=%.2f", 
+		target.PID, target.Name, target.AutoRestart, target.CPUThreshold)
+	return nil
+}
+
+// GetTargetStats 获取目标统计信息
+func (m *MultiMonitor) GetTargetStats(pid int32) map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	state, exists := m.targets[pid]
+	if !exists {
+		return nil
+	}
+	
+	return map[string]interface{}{
+		"restart_count":   state.restartCount,
+		"last_restart":    state.lastRestart,
+		"cpu_exceed_cnt":  state.cpuExceedCnt,
+		"mem_exceed_cnt":  state.memExceedCnt,
+	}
 }
 
 // GetTargets 获取所有监控目标（按 PID 排序）
@@ -217,6 +256,7 @@ func (m *MultiMonitor) collectOne(pid int32) {
 		return
 	}
 	buf := m.metricsBuffers[pid]
+	target := state.target
 	m.mu.Unlock()
 
 	alive := m.provider.IsAlive(pid)
@@ -236,12 +276,85 @@ func (m *MultiMonitor) collectOne(pid int32) {
 		m.mu.Lock()
 		state.exitReported = false
 		m.mu.Unlock()
+		
+		// 检查 CPU 阈值
+		if target.CPUThreshold > 0 && metric.CPUPct > target.CPUThreshold {
+			m.mu.Lock()
+			state.cpuExceedCnt++
+			exceedCnt := state.cpuExceedCnt
+			exceedLimit := target.CPUExceedCount
+			if exceedLimit <= 0 {
+				exceedLimit = 3 // 默认连续3次
+			}
+			m.mu.Unlock()
+			
+			if exceedCnt >= exceedLimit {
+				evt := types.Event{
+					Timestamp: time.Now(),
+					Type:      "cpu_threshold",
+					PID:       pid,
+					Name:      target.Name,
+					Message:   fmt.Sprintf("CPU %.2f%% 超过阈值 %.2f%% 连续 %d 次", metric.CPUPct, target.CPUThreshold, exceedCnt),
+				}
+				m.addEvent(evt)
+				
+				// 如果配置了重启命令，执行重启
+				if target.RestartCmd != "" {
+					m.tryRestart(pid, "cpu_threshold")
+				}
+				
+				m.mu.Lock()
+				state.cpuExceedCnt = 0
+				m.mu.Unlock()
+			}
+		} else {
+			m.mu.Lock()
+			state.cpuExceedCnt = 0
+			m.mu.Unlock()
+		}
+		
+		// 检查内存阈值
+		if target.MemThreshold > 0 && metric.RSSBytes > target.MemThreshold {
+			m.mu.Lock()
+			state.memExceedCnt++
+			exceedCnt := state.memExceedCnt
+			exceedLimit := target.MemExceedCount
+			if exceedLimit <= 0 {
+				exceedLimit = 3 // 默认连续3次
+			}
+			m.mu.Unlock()
+			
+			if exceedCnt >= exceedLimit {
+				evt := types.Event{
+					Timestamp: time.Now(),
+					Type:      "mem_threshold",
+					PID:       pid,
+					Name:      target.Name,
+					Message:   fmt.Sprintf("内存 %d MB 超过阈值 %d MB 连续 %d 次", metric.RSSBytes/1024/1024, target.MemThreshold/1024/1024, exceedCnt),
+				}
+				m.addEvent(evt)
+				
+				if target.RestartCmd != "" {
+					m.tryRestart(pid, "mem_threshold")
+				}
+				
+				m.mu.Lock()
+				state.memExceedCnt = 0
+				m.mu.Unlock()
+			}
+		} else {
+			m.mu.Lock()
+			state.memExceedCnt = 0
+			m.mu.Unlock()
+		}
 	}
 
 	buf.Push(metric)
 	m.mu.Lock()
 	state.lastMetric = &metric
 	exitReported := state.exitReported
+	autoRestart := target.AutoRestart
+	restartCmd := target.RestartCmd
 	m.mu.Unlock()
 
 	// 写入日志
@@ -257,11 +370,87 @@ func (m *MultiMonitor) collectOne(pid int32) {
 			Timestamp: time.Now(),
 			Type:      "exit",
 			PID:       pid,
-			Name:      state.target.Name,
-			Message:   "process exited",
+			Name:      target.Name,
+			Message:   "进程已退出",
 		}
 		m.addEvent(evt)
+		
+		// 自动重启
+		if autoRestart && restartCmd != "" {
+			m.tryRestart(pid, "exit")
+		}
 	}
+}
+
+// tryRestart 尝试重启进程
+func (m *MultiMonitor) tryRestart(pid int32, reason string) {
+	m.mu.Lock()
+	state, exists := m.targets[pid]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	
+	target := state.target
+	cooldown := target.RestartCooldown
+	if cooldown <= 0 {
+		cooldown = 30 // 默认30秒冷却
+	}
+	
+	// 检查冷却时间
+	if time.Since(state.lastRestart) < time.Duration(cooldown)*time.Second {
+		m.mu.Unlock()
+		log.Printf("[INFO] 重启冷却中，跳过重启 PID=%d", pid)
+		return
+	}
+	
+	state.lastRestart = time.Now()
+	state.restartCount++
+	restartCount := state.restartCount
+	restartCmd := target.RestartCmd
+	targetName := target.Name
+	m.mu.Unlock()
+	
+	// 执行重启命令
+	go func() {
+		var cmd *exec.Cmd
+		var cmdStr string
+		
+		if runtime.GOOS == "windows" {
+			// Windows: 使用 start 命令在新窗口中启动，避免阻塞
+			// 如果命令包含路径，用 start "" "path" 格式
+			cmdStr = fmt.Sprintf("start \"\" %s", restartCmd)
+			cmd = exec.Command("cmd", "/C", cmdStr)
+		} else {
+			cmdStr = restartCmd
+			cmd = exec.Command("sh", "-c", restartCmd)
+		}
+		
+		// 设置不继承当前进程的标准输入输出
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		
+		log.Printf("[INFO] 执行重启命令: %s", cmdStr)
+		
+		err := cmd.Start()
+		
+		evt := types.Event{
+			Timestamp: time.Now(),
+			Type:      "restart",
+			PID:       pid,
+			Name:      targetName,
+		}
+		
+		if err != nil {
+			evt.Message = fmt.Sprintf("重启失败 (原因:%s): %v | 命令: %s", reason, err, restartCmd)
+			log.Printf("[ERROR] 重启失败: %v", err)
+		} else {
+			evt.Message = fmt.Sprintf("已执行重启命令 (原因:%s, 第%d次重启) | 命令: %s", reason, restartCount, restartCmd)
+		}
+		
+		m.addEvent(evt)
+	}()
 }
 
 func (m *MultiMonitor) writeLog(v any) {

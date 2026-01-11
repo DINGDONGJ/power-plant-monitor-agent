@@ -56,9 +56,16 @@ type ProcessInfo struct {
 
 // MonitorTarget 监控目标
 type MonitorTarget struct {
-	PID        int32  `json:"pid"`
-	Name       string `json:"name"`
-	RestartCmd string `json:"restart_cmd,omitempty"`
+	PID             int32   `json:"pid"`
+	Name            string  `json:"name"`
+	Cmdline         string  `json:"cmdline,omitempty"`           // 进程命令行（用于自动填充重启命令）
+	RestartCmd      string  `json:"restart_cmd,omitempty"`       // 重启命令
+	AutoRestart     bool    `json:"auto_restart"`                // 退出时自动重启
+	CPUThreshold    float64 `json:"cpu_threshold,omitempty"`     // CPU阈值 (%)
+	MemThreshold    uint64  `json:"mem_threshold,omitempty"`     // 内存阈值 (bytes)
+	CPUExceedCount  int     `json:"cpu_exceed_count,omitempty"`  // CPU连续超限次数触发
+	MemExceedCount  int     `json:"mem_exceed_count,omitempty"`  // 内存连续超限次数触发
+	RestartCooldown int     `json:"restart_cooldown,omitempty"`  // 重启冷却时间（秒）
 }
 
 // MultiMonitorConfig 多进程监控配置

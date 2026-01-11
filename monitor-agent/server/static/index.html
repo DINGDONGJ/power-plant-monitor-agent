@@ -151,6 +151,44 @@
         }
         .context-menu-item:hover { background: #2a2a2a; color: #00ff00; }
         .context-menu-item .check { color: #00ff00; width: 16px; }
+        
+        /* 配置弹窗样式 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: #1a1a1a;
+            border: 1px solid #444;
+            padding: 20px;
+            min-width: 400px;
+            max-width: 500px;
+        }
+        .modal h3 { color: #00ffff; margin-bottom: 15px; font-weight: normal; }
+        .modal-row { margin-bottom: 12px; }
+        .modal-row label { display: block; color: #888; margin-bottom: 4px; font-size: 12px; }
+        .modal-row input[type="text"], .modal-row input[type="number"] {
+            width: 100%; padding: 8px; background: #0a0a0a; border: 1px solid #444;
+            color: #00ff00; font-family: inherit; font-size: 13px;
+        }
+        .modal-row input:focus { outline: none; border-color: #00ff00; }
+        .modal-row .checkbox-label { display: flex; align-items: center; gap: 8px; color: #ccc; cursor: pointer; }
+        .modal-row .checkbox-label input { width: auto; }
+        .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+        .modal-buttons .btn { min-width: 80px; }
+        
+        .target-card .config-btn { background: transparent; border: 1px solid #444; color: #888; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+        .target-card .config-btn:hover { border-color: #00ff00; color: #00ff00; }
+        .target-card .tag { display: inline-block; padding: 2px 6px; font-size: 10px; border-radius: 2px; margin-right: 4px; }
+        .target-card .tag-auto { background: #0a3a0a; color: #00ff00; }
+        .target-card .tag-cpu { background: #3a3a0a; color: #ffff00; }
+        .target-card .tag-mem { background: #3a0a3a; color: #ff00ff; }
     </style>
 </head>
 <body>
@@ -225,6 +263,48 @@
         
         <!-- 列显示/隐藏右键菜单 -->
         <div class="context-menu" id="columnMenu"></div>
+        
+        <!-- 目标配置弹窗 -->
+        <div class="modal-overlay" id="configModal">
+            <div class="modal">
+                <h3>⚙ 监控配置 - <span id="configTargetName"></span></h3>
+                <input type="hidden" id="configPid">
+                <div class="modal-row">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="configAutoRestart">
+                        <span>退出时自动重启</span>
+                    </label>
+                </div>
+                <div class="modal-row">
+                    <label>重启命令</label>
+                    <input type="text" id="configRestartCmd" placeholder="例如: notepad.exe 或 start myapp.exe">
+                </div>
+                <div class="modal-row">
+                    <label>CPU 阈值 (%, 0=不监控)</label>
+                    <input type="number" id="configCpuThreshold" min="0" max="100" step="1" value="0">
+                </div>
+                <div class="modal-row">
+                    <label>内存阈值 (MB, 0=不监控)</label>
+                    <input type="number" id="configMemThreshold" min="0" step="1" value="0">
+                </div>
+                <div class="modal-row">
+                    <label>CPU超限触发次数 (连续N次超限后触发)</label>
+                    <input type="number" id="configCpuExceedCount" min="1" max="100" value="3">
+                </div>
+                <div class="modal-row">
+                    <label>内存超限触发次数 (连续N次超限后触发)</label>
+                    <input type="number" id="configMemExceedCount" min="1" max="100" value="3">
+                </div>
+                <div class="modal-row">
+                    <label>重启冷却时间 (秒)</label>
+                    <input type="number" id="configRestartCooldown" min="0" value="30">
+                </div>
+                <div class="modal-buttons">
+                    <button class="btn" onclick="closeConfigModal()">取消</button>
+                    <button class="btn" onclick="saveConfig()" style="background:#003300">保存</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -810,7 +890,11 @@
                 await fetch('/api/monitor/add', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pid, name: proc?.name || '' })
+                    body: JSON.stringify({ 
+                        pid, 
+                        name: proc?.name || '',
+                        cmdline: proc?.cmdline || ''
+                    })
                 });
             }
             await fetch('/api/monitor/start', { method: 'POST' });
@@ -836,25 +920,96 @@
             }
         }
 
+        // 保存目标配置到内存（用于显示标签）
+        let targetConfigs = {};
+        
         function renderTargets(targets, metrics) {
             const container = document.getElementById('targetsList');
             if (!targets || targets.length === 0) {
                 container.innerHTML = '<p style="color:#666">暂无监控目标，请从进程列表添加</p>';
                 return;
             }
+            // 更新配置缓存
+            targets.forEach(t => targetConfigs[t.pid] = t);
+            
             container.innerHTML = targets.map(t => {
                 const m = metrics[t.pid];
                 const alive = m?.alive;
+                
+                // 生成标签
+                let tags = '';
+                if (t.auto_restart) tags += '<span class="tag tag-auto">自愈</span>';
+                if (t.cpu_threshold > 0) tags += `<span class="tag tag-cpu">CPU>${t.cpu_threshold}%</span>`;
+                if (t.mem_threshold > 0) tags += `<span class="tag tag-mem">内存>${Math.round(t.mem_threshold/1024/1024)}MB</span>`;
+                
                 return `
                 <div class="target-card">
-                    <div class="name">${t.name || '未知'}</div>
+                    <div class="name">${t.name || '未知'} <button class="config-btn" onclick="openConfigModal(${t.pid})">⚙</button></div>
                     <div class="row"><span class="label">进程ID</span><span class="value">${t.pid}</span></div>
                     <div class="row"><span class="label">CPU</span><span class="value">${m ? m.cpu_pct.toFixed(2) + '%' : '-'}</span></div>
                     <div class="row"><span class="label">内存</span><span class="value">${m ? formatBytes(m.rss_bytes) : '-'}</span></div>
                     <div class="row"><span class="label">状态</span><span class="value ${alive ? '' : 'dead'}">${alive ? '运行中' : '已退出'}</span></div>
+                    ${tags ? `<div class="row" style="border:none;padding-top:5px">${tags}</div>` : ''}
                     <button class="btn danger" onclick="removeTarget(${t.pid})">移除</button>
                 </div>
             `}).join('');
+        }
+        
+        function openConfigModal(pid) {
+            const t = targetConfigs[pid];
+            if (!t) return;
+            
+            document.getElementById('configPid').value = pid;
+            document.getElementById('configTargetName').textContent = t.name || 'PID:' + pid;
+            document.getElementById('configAutoRestart').checked = t.auto_restart || false;
+            // 如果没有设置重启命令，自动填充 cmdline
+            document.getElementById('configRestartCmd').value = t.restart_cmd || t.cmdline || '';
+            document.getElementById('configCpuThreshold').value = t.cpu_threshold || 0;
+            document.getElementById('configMemThreshold').value = t.mem_threshold ? Math.round(t.mem_threshold / 1024 / 1024) : 0;
+            document.getElementById('configCpuExceedCount').value = t.cpu_exceed_count || 3;
+            document.getElementById('configMemExceedCount').value = t.mem_exceed_count || 3;
+            document.getElementById('configRestartCooldown').value = t.restart_cooldown || 30;
+            
+            document.getElementById('configModal').classList.add('show');
+        }
+        
+        function closeConfigModal() {
+            document.getElementById('configModal').classList.remove('show');
+        }
+        
+        async function saveConfig() {
+            const pid = parseInt(document.getElementById('configPid').value);
+            const t = targetConfigs[pid];
+            if (!t) return;
+            
+            const config = {
+                pid: pid,
+                name: t.name,
+                auto_restart: document.getElementById('configAutoRestart').checked,
+                restart_cmd: document.getElementById('configRestartCmd').value,
+                cpu_threshold: parseFloat(document.getElementById('configCpuThreshold').value) || 0,
+                mem_threshold: (parseInt(document.getElementById('configMemThreshold').value) || 0) * 1024 * 1024,
+                cpu_exceed_count: parseInt(document.getElementById('configCpuExceedCount').value) || 3,
+                mem_exceed_count: parseInt(document.getElementById('configMemExceedCount').value) || 3,
+                restart_cooldown: parseInt(document.getElementById('configRestartCooldown').value) || 30
+            };
+            
+            try {
+                const res = await fetch('/api/monitor/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (res.ok) {
+                    closeConfigModal();
+                    refreshTargets();
+                } else {
+                    const err = await res.json();
+                    alert('保存失败: ' + (err.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('保存失败: ' + e.message);
+            }
         }
 
         function updateMonitorStatus(running) {

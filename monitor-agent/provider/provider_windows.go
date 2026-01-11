@@ -155,6 +155,13 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 		username, _ := proc.Username()
 		cmdline, _ := proc.Cmdline()
 		ioCounters, _ := proc.IOCounters()
+		
+		// 如果 cmdline 为空，尝试获取可执行文件路径
+		if cmdline == "" {
+			if exe, err := proc.Exe(); err == nil && exe != "" {
+				cmdline = fmt.Sprintf("\"%s\"", exe)
+			}
+		}
 
 		var rss uint64
 		if memInfo != nil {

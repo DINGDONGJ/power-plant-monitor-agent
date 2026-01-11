@@ -29,6 +29,7 @@ func NewWebServer(mm *monitor.MultiMonitor) *WebServer {
 	s.mux.HandleFunc("/api/monitor/add", s.handleAddTarget)
 	s.mux.HandleFunc("/api/monitor/remove", s.handleRemoveTarget)
 	s.mux.HandleFunc("/api/monitor/removeAll", s.handleRemoveAllTargets)
+	s.mux.HandleFunc("/api/monitor/update", s.handleUpdateTarget)
 	s.mux.HandleFunc("/api/monitor/start", s.handleStart)
 	s.mux.HandleFunc("/api/monitor/stop", s.handleStop)
 	s.mux.HandleFunc("/api/metrics", s.handleMetrics)
@@ -127,6 +128,24 @@ func (s *WebServer) handleRemoveAllTargets(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.multiMonitor.RemoveAllTargets()
+	s.jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// POST /api/monitor/update - 更新监控目标配置
+func (s *WebServer) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		s.errorResponse(w, 405, "method not allowed")
+		return
+	}
+	var target types.MonitorTarget
+	if err := json.NewDecoder(r.Body).Decode(&target); err != nil {
+		s.errorResponse(w, 400, "invalid request body")
+		return
+	}
+	if err := s.multiMonitor.UpdateTarget(target); err != nil {
+		s.errorResponse(w, 400, err.Error())
+		return
+	}
 	s.jsonResponse(w, map[string]string{"status": "ok"})
 }
 
