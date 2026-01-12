@@ -17,11 +17,26 @@ var staticFiles embed.FS
 // WebServer Web 服务器（带界面）
 type WebServer struct {
 	multiMonitor *monitor.MultiMonitor
+	authManager  *AuthManager
 	mux          *http.ServeMux
+	handler      http.Handler
 }
 
 func NewWebServer(mm *monitor.MultiMonitor) *WebServer {
-	s := &WebServer{multiMonitor: mm, mux: http.NewServeMux()}
+	return NewWebServerWithAuth(mm, AuthConfig{})
+}
+
+func NewWebServerWithAuth(mm *monitor.MultiMonitor, authCfg AuthConfig) *WebServer {
+	s := &WebServer{
+		multiMonitor: mm,
+		authManager:  NewAuthManager(authCfg),
+		mux:          http.NewServeMux(),
+	}
+
+	// 登录相关路由（不需要认证）
+	s.mux.HandleFunc("/login", s.authManager.HandleLogin)
+	s.mux.HandleFunc("/api/login", s.authManager.HandleLogin)
+	s.mux.HandleFunc("/api/logout", s.authManager.HandleLogout)
 
 	// API 路由
 	s.mux.HandleFunc("/api/processes", s.handleListProcesses)
@@ -42,6 +57,9 @@ func NewWebServer(mm *monitor.MultiMonitor) *WebServer {
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	s.mux.Handle("/", http.FileServer(http.FS(staticFS)))
 
+	// 应用认证中间件
+	s.handler = s.authManager.AuthMiddleware(s.mux)
+
 	return s
 }
 
@@ -53,7 +71,7 @@ func (s *WebServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 func (s *WebServer) jsonResponse(w http.ResponseWriter, data any) {

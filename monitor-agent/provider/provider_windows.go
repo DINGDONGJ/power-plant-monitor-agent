@@ -24,11 +24,31 @@ type ioSample struct {
 type windowsProvider struct {
 	ioSamplesMu sync.RWMutex
 	ioSamples   map[int32]*ioSample
+
+	// 系统指标缓存（后台 goroutine 更新）
+	sysCPUMu      sync.RWMutex
+	sysCPUPercent float64
 }
 
 func New() ProcProvider {
-	return &windowsProvider{
+	p := &windowsProvider{
 		ioSamples: make(map[int32]*ioSample),
+	}
+	// 启动后台 goroutine 采集系统 CPU
+	go p.sampleSystemCPU()
+	return p
+}
+
+// sampleSystemCPU 后台定时采集系统 CPU，避免阻塞主循环
+func (p *windowsProvider) sampleSystemCPU() {
+	for {
+		// cpu.Percent(time.Second, false) 会阻塞 1 秒
+		cpuPercent, _ := cpu.Percent(time.Second, false)
+		if len(cpuPercent) > 0 {
+			p.sysCPUMu.Lock()
+			p.sysCPUPercent = cpuPercent[0]
+			p.sysCPUMu.Unlock()
+		}
 	}
 }
 
@@ -122,7 +142,7 @@ func (p *windowsProvider) calcDiskIORate(pid int32, currentTotal uint64) float64
 	}
 
 	deltaTime := now.Sub(sample.sampleTime).Seconds()
-	if deltaTime < 0.5 {
+	if deltaTime < 0.1 {
 		return sample.lastRate
 	}
 
@@ -155,6 +175,7 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 		username, _ := proc.Username()
 		cmdline, _ := proc.Cmdline()
 		ioCounters, _ := proc.IOCounters()
+		createTime, _ := proc.CreateTime() // 毫秒时间戳
 		
 		// 如果 cmdline 为空，尝试获取可执行文件路径
 		if cmdline == "" {
@@ -179,6 +200,12 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 			diskIO = p.calcDiskIORate(proc.Pid, totalIO)
 		}
 
+		// 计算已运行时间（秒）
+		var uptime int64
+		if createTime > 0 {
+			uptime = (time.Now().UnixMilli() - createTime) / 1000
+		}
+
 		result = append(result, types.ProcessInfo{
 			PID:      proc.Pid,
 			Name:     name,
@@ -186,8 +213,9 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 			RSSBytes: rss,
 			Status:   statusStr,
 			Username: username,
-			Cmdline:  cmdline,
 			DiskIO:   diskIO,
+			Uptime:   uptime,
+			Cmdline:  cmdline,
 		})
 	}
 
@@ -204,13 +232,12 @@ func (p *windowsProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 }
 
 func (p *windowsProvider) GetSystemMetrics() (*types.SystemMetrics, error) {
-	cpuPercent, _ := cpu.Percent(time.Second, false)
 	memInfo, _ := mem.VirtualMemory()
 
-	var cpuPct float64
-	if len(cpuPercent) > 0 {
-		cpuPct = cpuPercent[0]
-	}
+	// 从缓存读取系统 CPU（后台 goroutine 更新）
+	p.sysCPUMu.RLock()
+	cpuPct := p.sysCPUPercent
+	p.sysCPUMu.RUnlock()
 
 	return &types.SystemMetrics{
 		CPUPercent:    cpuPct,

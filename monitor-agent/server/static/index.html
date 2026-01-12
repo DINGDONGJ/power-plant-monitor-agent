@@ -195,7 +195,10 @@
     <div class="container">
         <div class="header">
             <h1>[ 电厂核心软件监视保障系统 v1.0 ]</h1>
-            <span class="time" id="currentTime"></span>
+            <div style="display:flex;align-items:center;gap:15px">
+                <span class="time" id="currentTime"></span>
+                <button class="btn" onclick="logout()" style="padding:3px 10px;font-size:12px">退出登录</button>
+            </div>
         </div>
         
         <div class="system-panel">
@@ -335,6 +338,7 @@
             { key: 'cpu', title: 'CPU%', width: '80px', sortable: true },
             { key: 'mem', title: '内存', width: '90px', sortable: true },
             { key: 'disk', title: '磁盘', width: '90px', sortable: true },
+            { key: 'uptime', title: '已运行', width: '90px', sortable: true },
             { key: 'cmdline', title: '命令行', width: '200px', sortable: false }
         ];
 
@@ -487,6 +491,43 @@
             return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
         }
 
+        function formatUptime(seconds) {
+            if (seconds < 60) return seconds + '秒';
+            
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            let result = '';
+            if (days > 0) result += days + '天';
+            if (hours > 0) result += hours + '小时';
+            if (minutes > 0) result += minutes + '分钟';
+            if (secs > 0 || result === '') result += secs + '秒';
+            
+            return result;
+        }
+
+        // 根据进程状态返回颜色
+        function getStatusColor(status) {
+            if (!status) return '#00ff00';
+            const s = status.toLowerCase();
+            // running - 绿色（正在运行）
+            if (s === 'running' || s === 'run' || s === 'r') return '#00ff00';
+            // sleep - 青色（正常等待）
+            if (s === 'sleep' || s === 'sleeping' || s === 's') return '#00cccc';
+            // idle - 灰色（空闲）
+            if (s === 'idle' || s === 'i') return '#888888';
+            // stop - 黄色（已停止）
+            if (s === 'stop' || s === 'stopped' || s === 't') return '#ffff00';
+            // zombie - 红色（僵尸进程）
+            if (s === 'zombie' || s === 'z') return '#ff4444';
+            // disk sleep - 橙色（等待IO）
+            if (s === 'disk-sleep' || s === 'disk sleep' || s === 'd') return '#ff8800';
+            // 默认绿色
+            return '#00ff00';
+        }
+
         function getLevel(percent) {
             if (percent < 50) return 'level-low';
             if (percent < 70) return 'level-mid';
@@ -512,15 +553,42 @@
                 document.getElementById('memInfo').textContent = formatBytes(data.memory_used) + ' / ' + formatBytes(data.memory_total);
                 lastMemInfo = { used: data.memory_used, total: data.memory_total };
                 
-                // 绘制图表
-                drawChart('cpuChart', cpuHistory, '#00ff00', '#003300');
-                drawChart('memChart', memHistory, '#00ffff', '#003333');
+                // 图表由动画循环绘制，这里只更新数据
             } catch (e) {
                 console.error('获取系统指标失败:', e);
             }
         }
         
-        function drawChart(canvasId, data, lineColor, fillColor) {
+        // 彩虹色呼吸效果
+        let rainbowHue = 0;
+        
+        function updateRainbow() {
+            rainbowHue = (rainbowHue + 2) % 360;  // 每次增加2度，更快变化
+        }
+        
+        // 独立的动画循环，实现呼吸效果
+        function startRainbowAnimation() {
+            setInterval(() => {
+                updateRainbow();
+                // 重绘图表
+                if (cpuHistory.length > 0) {
+                    drawChart('cpuChart', cpuHistory, 0);
+                    drawChart('memChart', memHistory, 180);
+                }
+            }, 50);  // 每50ms更新一次，实现流畅呼吸效果
+        }
+        
+        function getRainbowColor(offset = 0) {
+            const hue = (rainbowHue + offset) % 360;
+            return `hsl(${hue}, 100%, 50%)`;
+        }
+        
+        function getRainbowFillColor(offset = 0) {
+            const hue = (rainbowHue + offset) % 360;
+            return `hsla(${hue}, 100%, 30%, 0.3)`;
+        }
+        
+        function drawChart(canvasId, data, hueOffset = 0) {
             const canvas = document.getElementById(canvasId);
             const ctx = canvas.getContext('2d');
             const rect = canvas.parentElement.getBoundingClientRect();
@@ -571,7 +639,6 @@
             if (data.length < 1) return;
             
             // Steam 风格：数据从右向左滚动，最新数据在最右边
-            // 计算点的位置，数据不足时从右边开始绘制
             const startX = padding.left + chartWidth - ((data.length - 1) / (MAX_DATA_POINTS - 1)) * chartWidth;
             const stepX = chartWidth / (MAX_DATA_POINTS - 1);
             
@@ -580,9 +647,9 @@
                 y: padding.top + chartHeight - (val / 100) * chartHeight
             }));
             
-            // 创建渐变填充
+            // 创建彩虹渐变填充
             const gradient = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartHeight);
-            gradient.addColorStop(0, fillColor);
+            gradient.addColorStop(0, getRainbowFillColor(hueOffset));
             gradient.addColorStop(1, 'rgba(0,0,0,0)');
             
             // 绘制填充区域
@@ -594,9 +661,10 @@
             ctx.fillStyle = gradient;
             ctx.fill();
             
-            // 绘制折线（带发光效果）
+            // 绘制彩虹折线（带发光效果）
+            const lineColor = getRainbowColor(hueOffset);
             ctx.shadowColor = lineColor;
-            ctx.shadowBlur = 4;
+            ctx.shadowBlur = 6;
             ctx.beginPath();
             ctx.moveTo(points[0].x, points[0].y);
             points.forEach(p => ctx.lineTo(p.x, p.y));
@@ -709,6 +777,23 @@
             if (bytesPerSec < 1024 * 1024) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
             return (bytesPerSec / 1024 / 1024).toFixed(1) + ' MB/s';
         }
+        
+        // 根据磁盘速率获取颜色
+        function getDiskColor(bytesPerSec) {
+            // 0 B/s = 绿色, 1MB/s = 黄色, 10MB/s = 橙色, 50MB/s+ = 红色
+            if (bytesPerSec < 100 * 1024) return '#00ff00';        // < 100KB/s 绿色
+            if (bytesPerSec < 1024 * 1024) return '#88ff00';       // < 1MB/s 黄绿
+            if (bytesPerSec < 10 * 1024 * 1024) return '#ffff00';  // < 10MB/s 黄色
+            if (bytesPerSec < 50 * 1024 * 1024) return '#ff8800';  // < 50MB/s 橙色
+            return '#ff4444';                                       // >= 50MB/s 红色
+        }
+        
+        // 格式化磁盘速率（带颜色）
+        function formatDiskRateColored(bytesPerSec) {
+            const text = formatDiskRate(bytesPerSec);
+            const color = getDiskColor(bytesPerSec);
+            return `<span style="color:${color}">${text}</span>`;
+        }
 
         function getCellValue(p, key, isGroup = false, group = null) {
             if (isGroup) {
@@ -719,14 +804,15 @@
                         return `<input type="checkbox" class="checkbox" ${groupSelected ? 'checked' : ''} ${groupPartial ? 'style="opacity:0.5"' : ''} onclick="event.stopPropagation();toggleGroupSelect('${group.name.replace(/'/g, "\\'")}')">`;
                     case 'name':
                         const isExpanded = expandedGroups.has(group.name);
-                        return `${group.hasMonitored ? '● ' : ''}${isExpanded ? '▼' : '▶'} ${group.name} <span style="color:#888">(${group.procs.length})</span>`;
-                    case 'pid': return '-';
-                    case 'status': return group.procs.length;
-                    case 'username': return '-';
+                        return `<span style="color:#fff;font-weight:bold">${group.hasMonitored ? '● ' : ''}${isExpanded ? '▼' : '▶'} ${group.name}</span> <span style="color:#888">(${group.procs.length})</span>`;
+                    case 'pid': return '<span style="color:#fff">-</span>';
+                    case 'status': return `<span style="color:#00ff00">${group.procs.length}</span>`;
+                    case 'username': return '<span style="color:#fff">-</span>';
                     case 'cpu': return group.totalCpu.toFixed(2);
                     case 'mem': return formatBytes(group.totalMem);
-                    case 'disk': return formatDiskRate(group.totalDiskIO);
-                    case 'cmdline': return '-';
+                    case 'disk': return `<span style="color:#fff">${formatDiskRate(group.totalDiskIO)}</span>`;
+                    case 'uptime': return '<span style="color:#fff">-</span>';
+                    case 'cmdline': return '<span style="color:#fff">-</span>';
                     default: return '-';
                 }
             } else {
@@ -734,14 +820,15 @@
                 switch (key) {
                     case 'checkbox':
                         return `<input type="checkbox" class="checkbox" data-pid="${p.pid}" ${selectedPids.has(p.pid) ? 'checked' : ''} onchange="toggleSelect(${p.pid})">`;
-                    case 'name': return `${isMonitored ? '● ' : ''}${p.name || '-'}`;
-                    case 'pid': return p.pid;
-                    case 'status': return `<span class="status status-running">${p.status || '运行'}</span>`;
-                    case 'username': return p.username || '-';
+                    case 'name': return `<span style="color:#fff;font-weight:bold">${isMonitored ? '● ' : ''}${p.name || '-'}</span>`;
+                    case 'pid': return `<span style="color:#fff;font-weight:bold">${p.pid}</span>`;
+                    case 'status': return `<span class="status" style="color:${getStatusColor(p.status)}">${p.status || '运行'}</span>`;
+                    case 'username': return `<span style="color:#fff">${p.username || '-'}</span>`;
                     case 'cpu': return p.cpu_pct.toFixed(2);
                     case 'mem': return formatBytes(p.rss_bytes);
-                    case 'disk': return formatDiskRate(p.disk_io || 0);
-                    case 'cmdline': return `<span class="cmdline" title="${(p.cmdline || '').replace(/"/g, '&quot;')}">${p.cmdline || '-'}</span>`;
+                    case 'disk': return `<span style="color:#fff">${formatDiskRate(p.disk_io || 0)}</span>`;
+                    case 'uptime': return `<span style="color:#fff">${formatUptime(p.uptime || 0)}</span>`;
+                    case 'cmdline': return `<span class="cmdline" style="color:#fff" title="${(p.cmdline || '').replace(/"/g, '&quot;')}">${p.cmdline || '-'}</span>`;
                     default: return '-';
                 }
             }
@@ -778,6 +865,7 @@
                     case 'cpu': valA = a.totalCpu; valB = b.totalCpu; break;
                     case 'mem': valA = a.totalMem; valB = b.totalMem; break;
                     case 'disk': valA = a.totalDiskIO; valB = b.totalDiskIO; break;
+                    case 'uptime': valA = Math.max(...a.procs.map(p => p.uptime || 0)); valB = Math.max(...b.procs.map(p => p.uptime || 0)); break;
                     case 'pid': valA = Math.min(...a.procs.map(p => p.pid)); valB = Math.min(...b.procs.map(p => p.pid)); break;
                     default: valA = a.totalCpu; valB = b.totalCpu;
                 }
@@ -821,6 +909,7 @@
                                 case 'cpu': valA = a.cpu_pct; valB = b.cpu_pct; break;
                                 case 'mem': valA = a.rss_bytes; valB = b.rss_bytes; break;
                                 case 'disk': valA = a.disk_io || 0; valB = b.disk_io || 0; break;
+                                case 'uptime': valA = a.uptime || 0; valB = b.uptime || 0; break;
                                 default: valA = a.cpu_pct; valB = b.cpu_pct;
                             }
                             if (valA < valB) return sortAsc ? -1 : 1;
@@ -1094,6 +1183,16 @@
         renderTableHeader();
         startSystemRefresh();
         startProcessAutoRefresh();
+        startRainbowAnimation();  // 启动彩虹呼吸动画
+        
+        // 登出函数
+        async function logout() {
+            if (!confirm('确定要退出登录吗？')) return;
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (e) {}
+            window.location.href = '/login';
+        }
     </script>
 </body>
 </html>
