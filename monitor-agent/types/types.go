@@ -49,6 +49,8 @@ type ProcessInfo struct {
 	CPUPct        float64 `json:"cpu_pct"`
 	RSSBytes      uint64  `json:"rss_bytes"`
 	VMS           uint64  `json:"vms"`             // 虚拟内存大小
+	PagedPool     uint64  `json:"paged_pool"`      // 页面缓冲池
+	NonPagedPool  uint64  `json:"non_paged_pool"`  // 非页面缓冲池
 	Status        string  `json:"status"`
 	Username      string  `json:"username"`        // 发布者/用户
 	NumFDs        int32   `json:"num_fds"`         // 句柄数/文件描述符数

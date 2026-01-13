@@ -52,7 +52,8 @@ type commonProvider struct {
 	matchProcessName func(procName, targetName string) bool
 	executeCommand   func(cmd string) error
 	formatCmdline    func(exe string) string
-	getHandleCount   func(pid int32) int32 // 可选，Windows 专用
+	getHandleCount   func(pid int32) int32                        // 可选，Windows 专用
+	getMemoryPools   func(pid int32) (pagedPool, nonPagedPool uint64) // 可选，Windows 专用
 }
 
 // newCommonProvider 创建通用 provider
@@ -61,6 +62,7 @@ func newCommonProvider(
 	execCmd func(cmd string) error,
 	fmtCmdline func(exe string) string,
 	getHandles func(pid int32) int32,
+	getMemPools func(pid int32) (uint64, uint64),
 ) *commonProvider {
 	p := &commonProvider{
 		ioSamples:        make(map[int32]*ioSample),
@@ -68,6 +70,7 @@ func newCommonProvider(
 		executeCommand:   execCmd,
 		formatCmdline:    fmtCmdline,
 		getHandleCount:   getHandles,
+		getMemoryPools:   getMemPools,
 	}
 	go p.sampleSystemMetrics()
 	return p
@@ -284,6 +287,28 @@ func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 			statusStr = status[0]
 		}
 
+		// 获取内存池信息
+		var pagedPool, nonPagedPool uint64
+		if p.getMemoryPools != nil {
+			// Windows: 使用平台特定的 GetProcessMemoryInfo
+			pagedPool, nonPagedPool = p.getMemoryPools(proc.Pid)
+		} else if memInfo != nil {
+			// Linux: 近似处理
+			// 非页面池：使用 Data 段（数据段，常驻内存）
+			// 如果 Data 为 0，使用 RSS - Shared 作为近似
+			nonPagedPool = memInfo.Data
+			if nonPagedPool == 0 {
+				// 使用 RSS 的一部分作为近似
+				nonPagedPool = memInfo.RSS / 10 // 约 10% 作为非页面池近似
+			}
+			// 页面池：使用 Swap（交换空间）
+			// 如果 Swap 为 0，使用 VMS - RSS 作为近似（虚拟内存中未驻留的部分）
+			pagedPool = memInfo.Swap
+			if pagedPool == 0 && memInfo.VMS > memInfo.RSS {
+				pagedPool = (memInfo.VMS - memInfo.RSS) / 10 // 约 10% 作为页面池近似
+			}
+		}
+
 		// 计算磁盘 IO 速率和次数
 		var diskIO, diskReadRate, diskWriteRate, diskReadOps, diskWriteOps float64
 		if ioCounters != nil {
@@ -307,6 +332,8 @@ func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 			CPUPct:        cpuPct,
 			RSSBytes:      rss,
 			VMS:           vms,
+			PagedPool:     pagedPool,
+			NonPagedPool:  nonPagedPool,
 			Status:        statusStr,
 			Username:      username,
 			NumFDs:        numFDs,

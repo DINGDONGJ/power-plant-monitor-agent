@@ -413,6 +413,8 @@
             'cpu': 70,
             'mem': 80,
             'vms': 80,
+            'pagedPool': 75,
+            'nonPagedPool': 75,
             'fds': 60,
             'diskRead': 85,
             'diskWrite': 85,
@@ -429,6 +431,8 @@
             { key: 'cpu', title: 'CPU%', sortable: true },
             { key: 'mem', title: '内存', sortable: true },
             { key: 'vms', title: '虚拟内存', sortable: true },
+            { key: 'pagedPool', title: '页面池', sortable: true },
+            { key: 'nonPagedPool', title: '非页面池', sortable: true },
             { key: 'fds', title: '句柄', sortable: true },
             { key: 'diskRead', title: '读/秒', sortable: true },
             { key: 'diskWrite', title: '写/秒', sortable: true },
@@ -1094,6 +1098,8 @@
                     case 'mem': return formatBytes(group.totalMem);
                     case 'vms': return formatBytes(group.totalVms);
                     case 'fds': return `<span style="color:#888">${group.totalFds}</span>`;
+                    case 'pagedPool': return formatBytes(group.totalPagedPool);
+                    case 'nonPagedPool': return formatBytes(group.totalNonPagedPool);
                     case 'diskRead': return formatDiskRate(group.totalDiskRead);
                     case 'diskWrite': return formatDiskRate(group.totalDiskWrite);
                     case 'uptime': return '<span style="color:#888">-</span>';
@@ -1113,6 +1119,8 @@
                     case 'mem': return formatBytes(p.rss_bytes);
                     case 'vms': return formatBytes(p.vms || 0);
                     case 'fds': return `<span style="color:#ccc">${p.num_fds || 0}</span>`;
+                    case 'pagedPool': return formatBytes(p.paged_pool || 0);
+                    case 'nonPagedPool': return formatBytes(p.non_paged_pool || 0);
                     case 'diskRead': return formatDiskRate(p.disk_read_rate || 0);
                     case 'diskWrite': return formatDiskRate(p.disk_write_rate || 0);
                     case 'uptime': return `<span style="color:#ccc">${formatUptime(p.uptime || 0)}</span>`;
@@ -1139,10 +1147,12 @@
                 const totalMem = procs.reduce((sum, p) => sum + p.rss_bytes, 0);
                 const totalVms = procs.reduce((sum, p) => sum + (p.vms || 0), 0);
                 const totalFds = procs.reduce((sum, p) => sum + (p.num_fds || 0), 0);
+                const totalPagedPool = procs.reduce((sum, p) => sum + (p.paged_pool || 0), 0);
+                const totalNonPagedPool = procs.reduce((sum, p) => sum + (p.non_paged_pool || 0), 0);
                 const totalDiskRead = procs.reduce((sum, p) => sum + (p.disk_read_rate || 0), 0);
                 const totalDiskWrite = procs.reduce((sum, p) => sum + (p.disk_write_rate || 0), 0);
                 const hasMonitored = procs.some(p => monitoredPids.has(p.pid));
-                return { name, procs, totalCpu, totalMem, totalVms, totalFds, totalDiskRead, totalDiskWrite, hasMonitored };
+                return { name, procs, totalCpu, totalMem, totalVms, totalFds, totalPagedPool, totalNonPagedPool, totalDiskRead, totalDiskWrite, hasMonitored };
             });
             
             // 排序
@@ -1157,6 +1167,8 @@
                     case 'mem': valA = a.totalMem; valB = b.totalMem; break;
                     case 'vms': valA = a.totalVms; valB = b.totalVms; break;
                     case 'fds': valA = a.totalFds; valB = b.totalFds; break;
+                    case 'pagedPool': valA = a.totalPagedPool; valB = b.totalPagedPool; break;
+                    case 'nonPagedPool': valA = a.totalNonPagedPool; valB = b.totalNonPagedPool; break;
                     case 'diskRead': valA = a.totalDiskRead; valB = b.totalDiskRead; break;
                     case 'diskWrite': valA = a.totalDiskWrite; valB = b.totalDiskWrite; break;
                     case 'uptime': valA = Math.max(...a.procs.map(p => p.uptime || 0)); valB = Math.max(...b.procs.map(p => p.uptime || 0)); break;
@@ -1206,6 +1218,8 @@
                                 case 'mem': valA = a.rss_bytes; valB = b.rss_bytes; break;
                                 case 'vms': valA = a.vms || 0; valB = b.vms || 0; break;
                                 case 'fds': valA = a.num_fds || 0; valB = b.num_fds || 0; break;
+                                case 'pagedPool': valA = a.paged_pool || 0; valB = b.paged_pool || 0; break;
+                                case 'nonPagedPool': valA = a.non_paged_pool || 0; valB = b.non_paged_pool || 0; break;
                                 case 'diskRead': valA = a.disk_read_rate || 0; valB = b.disk_read_rate || 0; break;
                                 case 'diskWrite': valA = a.disk_write_rate || 0; valB = b.disk_write_rate || 0; break;
                                 case 'uptime': valA = a.uptime || 0; valB = b.uptime || 0; break;

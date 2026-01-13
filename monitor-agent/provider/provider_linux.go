@@ -22,5 +22,7 @@ func New() ProcProvider {
 		},
 		// getHandleCount: Linux 使用 gopsutil 的 NumFDs (返回 nil 使用默认实现)
 		nil,
+		// getMemoryPools: Linux 无直接对应，使用 gopsutil 的 Data 段近似
+		nil,
 	)
 }
