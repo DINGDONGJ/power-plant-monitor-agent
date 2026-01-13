@@ -106,13 +106,27 @@
         input[type="text"]:focus { outline: none; border-color: #00ff00; }
         
         .table-container { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; min-width: 1200px; }
-        th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #222; white-space: nowrap; }
+        table { width: max-content; border-collapse: collapse; table-layout: fixed; }
+        th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         th { color: #00ffff; cursor: pointer; user-select: none; background: #111; position: relative; }
         th:hover { color: #fff; }
         th .sort-indicator { color: #ffff00; }
         th.dragging { opacity: 0.5; background: #333; }
         th.drag-over { border-left: 2px solid #00ff00; }
+        /* 列宽调整手柄 */
+        th .resize-handle {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 5px;
+            cursor: col-resize;
+            background: transparent;
+        }
+        th .resize-handle:hover,
+        th .resize-handle.resizing {
+            background: #00ff00;
+        }
         tr:hover { background: #1a1a1a; }
         tr.monitored { background: #0a2a0a; color: #00ff00; }
         tr.monitored:hover { background: #0a3a0a; }
@@ -122,7 +136,7 @@
         tr.group-child:hover { background: #151515; }
         tr.group-child.monitored { background: #0a2a0a; }
         .checkbox { cursor: pointer; }
-        .cmdline { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+        .cmdline { max-width: none; overflow: hidden; text-overflow: ellipsis; }
         
         .status { font-size: 12px; }
         .status-running { color: #00ff00; }
@@ -389,22 +403,49 @@
         let lastMemInfo = { used: 0, total: 0 };
         let maxNetRate = 1024 * 1024; // 初始最大值 1MB/s，会动态调整
 
-        // 列定义：key, 标题, 宽度, 是否可排序
+        // 列定义：key, 标题, 默认宽度(px), 是否可排序
+        const defaultColumnWidths = {
+            'checkbox': 35,
+            'name': 150,
+            'pid': 70,
+            'status': 60,
+            'username': 100,
+            'cpu': 70,
+            'mem': 80,
+            'vms': 80,
+            'fds': 60,
+            'diskRead': 85,
+            'diskWrite': 85,
+            'uptime': 100,
+            'cmdline': 250
+        };
+        
         const allColumns = [
-            { key: 'checkbox', title: '<input type="checkbox" class="checkbox" id="selectAll" onchange="toggleSelectAll()">', width: '30px', sortable: false },
-            { key: 'name', title: '进程名称', width: 'auto', sortable: true },
-            { key: 'pid', title: 'PID', width: '70px', sortable: true },
-            { key: 'status', title: '状态', width: '60px', sortable: true },
-            { key: 'username', title: '发布者', width: '100px', sortable: true },
-            { key: 'cpu', title: 'CPU%', width: '70px', sortable: true },
-            { key: 'mem', title: '内存', width: '80px', sortable: true },
-            { key: 'vms', title: '虚拟内存', width: '80px', sortable: true },
-            { key: 'fds', title: '句柄', width: '60px', sortable: true },
-            { key: 'diskRead', title: '读/秒', width: '80px', sortable: true },
-            { key: 'diskWrite', title: '写/秒', width: '80px', sortable: true },
-            { key: 'uptime', title: '已运行', width: '90px', sortable: true },
-            { key: 'cmdline', title: '命令行', width: '200px', sortable: false }
+            { key: 'checkbox', title: '<input type="checkbox" class="checkbox" id="selectAll" onchange="toggleSelectAll()">', sortable: false },
+            { key: 'name', title: '进程名称', sortable: true },
+            { key: 'pid', title: 'PID', sortable: true },
+            { key: 'status', title: '状态', sortable: true },
+            { key: 'username', title: '发布者', sortable: true },
+            { key: 'cpu', title: 'CPU%', sortable: true },
+            { key: 'mem', title: '内存', sortable: true },
+            { key: 'vms', title: '虚拟内存', sortable: true },
+            { key: 'fds', title: '句柄', sortable: true },
+            { key: 'diskRead', title: '读/秒', sortable: true },
+            { key: 'diskWrite', title: '写/秒', sortable: true },
+            { key: 'uptime', title: '已运行', sortable: true },
+            { key: 'cmdline', title: '命令行', sortable: false }
         ];
+        
+        // 列宽度（从 localStorage 加载或使用默认）
+        let columnWidths = JSON.parse(localStorage.getItem('columnWidths')) || {};
+        // 初始化默认宽度
+        allColumns.forEach(c => {
+            if (!columnWidths[c.key]) columnWidths[c.key] = defaultColumnWidths[c.key] || 80;
+        });
+        
+        function saveColumnWidths() {
+            localStorage.setItem('columnWidths', JSON.stringify(columnWidths));
+        }
 
         // 当前列顺序（从 localStorage 加载或使用默认）
         let columnOrder = JSON.parse(localStorage.getItem('columnOrder')) || allColumns.map(c => c.key);
@@ -449,9 +490,9 @@
                 if (!col) return '';
                 const sortIndicator = col.sortable && sortColumn === key ? (sortAsc ? ' ▲' : ' ▼') : '';
                 const draggable = key !== 'checkbox' ? 'draggable="true"' : '';
-                const onclick = col.sortable ? `onclick="sortProcesses('${key}')"` : '';
-                const style = col.width !== 'auto' ? `style="width:${col.width}"` : '';
-                return `<th data-key="${key}" ${draggable} ${onclick} ${style}>${col.title}<span class="sort-indicator">${sortIndicator}</span></th>`;
+                const onclick = col.sortable ? `onclick="handleHeaderClick(event, '${key}')"` : '';
+                const width = columnWidths[key] || 80;
+                return `<th data-key="${key}" ${draggable} ${onclick} style="width:${width}px">${col.title}<span class="sort-indicator">${sortIndicator}</span><div class="resize-handle" data-key="${key}"></div></th>`;
             }).join('');
             
             // 添加拖放事件和右键菜单
@@ -465,6 +506,85 @@
                 }
                 th.addEventListener('contextmenu', showColumnMenu);
             });
+            
+            // 添加列宽调整事件
+            tr.querySelectorAll('.resize-handle').forEach(handle => {
+                handle.addEventListener('mousedown', startResize);
+            });
+        }
+        
+        // 处理表头点击（排序），避免调整宽度时触发
+        let justResized = false; // 标志位：刚刚完成调整
+        
+        function handleHeaderClick(e, key) {
+            // 如果点击的是调整手柄，不触发排序
+            if (e.target.classList.contains('resize-handle')) return;
+            // 如果刚刚完成调整，不触发排序
+            if (justResized) {
+                justResized = false;
+                return;
+            }
+            sortProcesses(key);
+        }
+        
+        // 列宽调整相关变量
+        let resizingColumn = null;
+        let resizeStartX = 0;
+        let resizeStartWidth = 0;
+        
+        function startResize(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            resizingColumn = e.target.dataset.key;
+            resizeStartX = e.clientX;
+            resizeStartWidth = columnWidths[resizingColumn] || 80;
+            
+            e.target.classList.add('resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            
+            document.addEventListener('mousemove', doResize);
+            document.addEventListener('mouseup', stopResize);
+        }
+        
+        function doResize(e) {
+            if (!resizingColumn) return;
+            
+            const diff = e.clientX - resizeStartX;
+            const newWidth = Math.max(30, resizeStartWidth + diff); // 最小宽度 30px
+            columnWidths[resizingColumn] = newWidth;
+            
+            // 实时更新表头宽度
+            const th = document.querySelector(`th[data-key="${resizingColumn}"]`);
+            if (th) th.style.width = newWidth + 'px';
+            
+            // 更新对应的 td 宽度
+            const index = getVisibleColumns().indexOf(resizingColumn);
+            if (index >= 0) {
+                document.querySelectorAll(`#processTable tr`).forEach(row => {
+                    const td = row.children[index];
+                    if (td) td.style.width = newWidth + 'px';
+                });
+            }
+        }
+        
+        function stopResize(e) {
+            if (resizingColumn) {
+                document.querySelector(`.resize-handle[data-key="${resizingColumn}"]`)?.classList.remove('resizing');
+                saveColumnWidths();
+                // 设置标志位，阻止接下来的 click 事件触发排序
+                justResized = true;
+                // 延迟重置标志位
+                setTimeout(() => { justResized = false; }, 100);
+            }
+            
+            resizingColumn = null;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            
+            document.removeEventListener('mousemove', doResize);
+            document.removeEventListener('mouseup', stopResize);
         }
         
         // 显示列选择菜单
@@ -1060,13 +1180,15 @@
                     const isMonitored = monitoredPids.has(p.pid);
                     html += `<tr class="${isMonitored ? 'monitored' : ''}">`;
                     visibleCols.forEach(key => {
-                        html += `<td>${getCellValue(p, key)}</td>`;
+                        const width = columnWidths[key] || 80;
+                        html += `<td style="width:${width}px">${getCellValue(p, key)}</td>`;
                     });
                     html += `</tr>`;
                 } else {
                     html += `<tr class="group-header ${hasMonitored ? 'monitored' : ''}" onclick="toggleGroup('${name.replace(/'/g, "\\'")}')">`;
                     visibleCols.forEach(key => {
-                        html += `<td>${getCellValue(null, key, true, group)}</td>`;
+                        const width = columnWidths[key] || 80;
+                        html += `<td style="width:${width}px">${getCellValue(null, key, true, group)}</td>`;
                     });
                     html += `</tr>`;
                     
@@ -1097,9 +1219,10 @@
                             const isMonitored = monitoredPids.has(p.pid);
                             html += `<tr class="group-child ${isMonitored ? 'monitored' : ''}">`;
                             visibleCols.forEach((key, idx) => {
+                                const width = columnWidths[key] || 80;
                                 let val = getCellValue(p, key);
                                 if (key === 'name') val = `<span style="padding-left:20px">${val}</span>`;
-                                html += `<td>${val}</td>`;
+                                html += `<td style="width:${width}px">${val}</td>`;
                             });
                             html += `</tr>`;
                         });
