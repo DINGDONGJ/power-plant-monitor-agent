@@ -105,10 +105,11 @@
         input[type="text"] { padding: 5px 10px; background: #1a1a1a; border: 1px solid #444; color: #00ff00; font-family: inherit; font-size: 12px; width: 200px; }
         input[type="text"]:focus { outline: none; border-color: #00ff00; }
         
-        .table-container { overflow-x: auto; }
+        .table-container { overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 480px); }
+        .monitor-table-container { max-height: 200px; margin-bottom: 0; }
         table { width: max-content; border-collapse: collapse; table-layout: fixed; }
         th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        th { color: #00ffff; cursor: pointer; user-select: none; background: #111; position: relative; }
+        th { color: #00ffff; cursor: pointer; user-select: none; background: #111; position: sticky; top: 0; z-index: 10; }
         th:hover { color: #fff; }
         th .sort-indicator { color: #ffff00; }
         th.dragging { opacity: 0.5; background: #333; }
@@ -304,7 +305,12 @@
                     <button class="btn danger" onclick="removeAllTargets()">全部移除</button>
                 </div>
             </div>
-            <div class="targets-grid" id="targetsList"></div>
+            <div class="table-container monitor-table-container">
+                <table>
+                    <thead><tr id="monitorTableHeader"></tr></thead>
+                    <tbody id="monitorTableBody"></tbody>
+                </table>
+            </div>
         </div>
         
         <div class="tabs">
@@ -315,7 +321,6 @@
         <div id="processes" class="panel active">
             <div class="toolbar">
                 <input type="text" id="searchInput" placeholder="搜索进程..." oninput="filterProcesses()">
-                <input type="text" id="aliasInput" placeholder="备注名称（如：电力监控主进程）" style="width:220px">
                 <button class="btn" onclick="addSelectedToMonitor()">+ 添加到监控</button>
                 <span class="stats">已选: <span id="selectedCount">0</span> | 总计: <span id="totalCount">0</span></span>
                 <span class="stats" style="margin-left:auto">拖动表头调整列顺序</span>
@@ -340,10 +345,6 @@
             <div class="modal">
                 <h3>⚙ 监控配置 - <span id="configTargetName"></span></h3>
                 <input type="hidden" id="configPid">
-                <div class="modal-row">
-                    <label>备注名称</label>
-                    <input type="text" id="configAlias" placeholder="如：电力监控主进程">
-                </div>
                 <div class="modal-row">
                     <label class="checkbox-label">
                         <input type="checkbox" id="configAutoRestart">
@@ -1288,7 +1289,6 @@
 
         async function addSelectedToMonitor() {
             if (selectedPids.size === 0) return alert('请先选择要监控的进程');
-            const alias = document.getElementById('aliasInput').value.trim();
             for (const pid of selectedPids) {
                 const proc = allProcesses.find(p => p.pid === pid);
                 await fetch('/api/monitor/add', {
@@ -1297,26 +1297,31 @@
                     body: JSON.stringify({ 
                         pid, 
                         name: proc?.name || '',
-                        alias: alias,
                         cmdline: proc?.cmdline || ''
                     })
                 });
             }
             selectedPids.clear();
-            document.getElementById('aliasInput').value = '';
             updateSelectedCount();
             refreshTargets(); // 刷新监控面板
         }
 
         async function refreshTargets() {
             try {
-                const [targetsRes, metricsRes] = await Promise.all([
+                const [targetsRes, processesRes] = await Promise.all([
                     fetch('/api/monitor/targets'),
-                    fetch('/api/metrics/latest')
+                    fetch('/api/processes')
                 ]);
                 const targets = await targetsRes.json();
-                const metrics = await metricsRes.json();
-                renderTargets(targets, metrics);
+                const processes = await processesRes.json();
+                
+                // 将进程列表转换为以 PID 为 key 的 map
+                const processMap = {};
+                processes.forEach(p => {
+                    processMap[p.pid] = p;
+                });
+                
+                renderTargets(targets, processMap);
             } catch (e) {
                 console.error('获取监控目标失败:', e);
             }
@@ -1325,93 +1330,135 @@
         // 保存目标配置到内存（用于显示标签）
         let targetConfigs = {};
         
-        function renderTargets(targets, metrics) {
-            const container = document.getElementById('targetsList');
+        function renderTargets(targets, processMap) {
+            const headerRow = document.getElementById('monitorTableHeader');
+            const tbody = document.getElementById('monitorTableBody');
+            
             if (!targets || targets.length === 0) {
-                container.innerHTML = '<p style="color:#666">暂无监控目标，请从进程列表添加</p>';
+                headerRow.innerHTML = '';
+                tbody.innerHTML = '<tr><td colspan="20" style="color:#666;text-align:center;padding:20px">暂无监控目标，请从进程列表添加</td></tr>';
                 return;
             }
-            // 更新配置缓存
-            targets.forEach(t => targetConfigs[t.pid] = t);
             
-            container.innerHTML = targets.map(t => {
-                const m = metrics[t.pid];
-                const alive = m?.alive;
-                const displayName = t.alias || t.name || '未知';
-                const subName = `${t.name} (PID: ${t.pid})`;
-                
-                // 状态徽章
-                let statusBadge, statusClass;
-                if (!alive) {
-                    statusBadge = '已停止';
-                    statusClass = 'status-stopped';
-                } else {
-                    statusBadge = '运行中';
-                    statusClass = 'status-running';
+            // 更新配置缓存和 monitoredPids
+            monitoredPids.clear();
+            targets.forEach(t => {
+                targetConfigs[t.pid] = t;
+                monitoredPids.add(t.pid);
+            });
+            
+            // 使用与进程列表相同的列，但第一列改为操作列
+            const visibleCols = getVisibleColumns();
+            
+            // 渲染表头（与进程列表相同，但第一列是操作）
+            headerRow.innerHTML = visibleCols.map(key => {
+                const col = getColumnByKey(key);
+                if (!col) return '';
+                const width = columnWidths[key] || 80;
+                if (key === 'checkbox') {
+                    return `<th style="width:50px">操作</th>`;
                 }
-                
-                // 保护状态
-                const protAutoRestart = t.auto_restart;
-                const protCPU = t.cpu_threshold > 0;
-                const protMem = t.mem_threshold > 0;
-                const hasProtection = protAutoRestart || protCPU || protMem;
-                
-                let protectionHtml = '';
-                if (hasProtection) {
-                    protectionHtml = `
-                        <div class="protection-info">
-                            <div class="protection-title">🛡 保护策略</div>
-                            <div class="protection-items">
-                                <span class="prot-item ${protAutoRestart ? 'active' : 'inactive'}">
-                                    ${protAutoRestart ? '✓' : '○'} 自动重启
-                                </span>
-                                <span class="prot-item ${protCPU ? 'active' : 'inactive'}">
-                                    ${protCPU ? '✓' : '○'} CPU阈值${protCPU ? ': ' + t.cpu_threshold + '%' : ''}
-                                </span>
-                                <span class="prot-item ${protMem ? 'active' : 'inactive'}">
-                                    ${protMem ? '✓' : '○'} 内存阈值${protMem ? ': ' + Math.round(t.mem_threshold/1024/1024) + 'MB' : ''}
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    protectionHtml = `
-                        <div class="protection-info">
-                            <div class="protection-title">🛡 保护策略</div>
-                            <div style="color:#888">未配置保护策略，点击 ⚙ 配置</div>
-                        </div>
-                    `;
+                const sortIndicator = col.sortable && monitorSortColumn === key ? (monitorSortAsc ? ' ▲' : ' ▼') : '';
+                return `<th data-key="${key}" onclick="sortMonitorList('${key}')" style="width:${width}px">${col.title}<span class="sort-indicator">${sortIndicator}</span></th>`;
+            }).join('');
+            
+            // 添加右键菜单
+            headerRow.querySelectorAll('th').forEach(th => {
+                th.addEventListener('contextmenu', showColumnMenu);
+            });
+            
+            // 构建监控进程数据（合并 target 配置和进程信息）
+            let monitorData = targets.map(t => {
+                const p = processMap[t.pid];
+                return {
+                    ...t,
+                    ...(p || {}),
+                    pid: t.pid,
+                    alive: p != null,
+                    config: t
+                };
+            });
+            
+            // 排序
+            monitorData.sort((a, b) => {
+                let valA, valB;
+                switch (monitorSortColumn) {
+                    case 'name': valA = (a.name || '').toLowerCase(); valB = (b.name || '').toLowerCase(); break;
+                    case 'pid': valA = a.pid; valB = b.pid; break;
+                    case 'cpu': valA = a.cpu_pct || 0; valB = b.cpu_pct || 0; break;
+                    case 'mem': valA = a.rss_bytes || 0; valB = b.rss_bytes || 0; break;
+                    case 'vms': valA = a.vms || 0; valB = b.vms || 0; break;
+                    case 'pagedPool': valA = a.paged_pool || 0; valB = b.paged_pool || 0; break;
+                    case 'nonPagedPool': valA = a.non_paged_pool || 0; valB = b.non_paged_pool || 0; break;
+                    case 'fds': valA = a.num_fds || 0; valB = b.num_fds || 0; break;
+                    case 'diskRead': valA = a.disk_read_rate || 0; valB = b.disk_read_rate || 0; break;
+                    case 'diskWrite': valA = a.disk_write_rate || 0; valB = b.disk_write_rate || 0; break;
+                    case 'uptime': valA = a.uptime || 0; valB = b.uptime || 0; break;
+                    default: valA = a.cpu_pct || 0; valB = b.cpu_pct || 0;
                 }
+                if (valA < valB) return monitorSortAsc ? -1 : 1;
+                if (valA > valB) return monitorSortAsc ? 1 : -1;
+                return 0;
+            });
+            
+            // 渲染数据行
+            tbody.innerHTML = monitorData.map(item => {
+                const p = item.alive ? item : null;
+                const t = item.config;
                 
-                return `
-                <div class="target-card">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <div class="name">${displayName}</div>
-                            <div class="sub-name">${subName}</div>
-                        </div>
-                        <span class="status-badge ${statusClass}">${statusBadge}</span>
-                    </div>
-                    
-                    <div class="metrics-grid">
-                        <div class="metric-box">
-                            <div class="metric-label">CPU 占用</div>
-                            <div class="metric-value" style="color:${m && m.cpu_pct > 70 ? '#ffaa00' : '#00ff00'}">${m ? m.cpu_pct.toFixed(2) + '%' : '-'}</div>
-                        </div>
-                        <div class="metric-box">
-                            <div class="metric-label">内存占用</div>
-                            <div class="metric-value">${m ? formatBytes(m.rss_bytes) : '-'}</div>
-                        </div>
-                    </div>
-                    
-                    ${protectionHtml}
-                    
-                    <div class="card-actions">
-                        <button class="btn" onclick="openConfigModal(${t.pid})">⚙ 配置</button>
-                        <button class="btn danger" onclick="removeTarget(${t.pid})">移除</button>
-                    </div>
-                </div>
-            `}).join('');
+                let html = '<tr class="monitored">';
+                visibleCols.forEach(key => {
+                    const width = columnWidths[key] || 80;
+                    if (key === 'checkbox') {
+                        html += `<td style="width:50px">
+                            <span style="cursor:pointer;margin-right:5px" onclick="openConfigModal(${t.pid})" title="配置">⚙</span>
+                            <span style="cursor:pointer;color:#ff4444" onclick="removeTarget(${t.pid})" title="移除">✕</span>
+                        </td>`;
+                    } else {
+                        html += `<td style="width:${width}px">${getMonitorCellValue(item, key)}</td>`;
+                    }
+                });
+                html += '</tr>';
+                return html;
+            }).join('');
+        }
+        
+        // 监控列表排序状态
+        let monitorSortColumn = 'cpu';
+        let monitorSortAsc = false;
+        
+        function sortMonitorList(column) {
+            if (monitorSortColumn === column) {
+                monitorSortAsc = !monitorSortAsc;
+            } else {
+                monitorSortColumn = column;
+                monitorSortAsc = false;
+            }
+            refreshTargets();
+        }
+        
+        function getMonitorCellValue(item, key) {
+            const p = item.alive ? item : null;
+            switch (key) {
+                case 'name': return `<span style="color:#fff;font-weight:bold">● ${item.name || '-'}</span>`;
+                case 'pid': return `<span style="color:#fff;font-weight:bold">${item.pid}</span>`;
+                case 'status': 
+                    return item.alive 
+                        ? '<span style="color:#00ff00">运行</span>' 
+                        : '<span style="color:#ff4444">停止</span>';
+                case 'username': return `<span style="color:#ccc">${item.username || '-'}</span>`;
+                case 'cpu': return p ? p.cpu_pct.toFixed(2) : '-';
+                case 'mem': return p ? formatBytes(p.rss_bytes) : '-';
+                case 'vms': return p ? formatBytes(p.vms || 0) : '-';
+                case 'pagedPool': return p ? formatBytes(p.paged_pool || 0) : '-';
+                case 'nonPagedPool': return p ? formatBytes(p.non_paged_pool || 0) : '-';
+                case 'fds': return `<span style="color:#ccc">${p ? (p.num_fds || 0) : '-'}</span>`;
+                case 'diskRead': return p ? formatDiskRate(p.disk_read_rate || 0) : '-';
+                case 'diskWrite': return p ? formatDiskRate(p.disk_write_rate || 0) : '-';
+                case 'uptime': return `<span style="color:#ccc">${p ? formatUptime(p.uptime || 0) : '-'}</span>`;
+                case 'cmdline': return `<span class="cmdline" style="color:#ccc" title="${(item.cmdline || '').replace(/"/g, '&quot;')}">${item.cmdline || '-'}</span>`;
+                default: return '-';
+            }
         }
         
         function openConfigModal(pid) {
@@ -1419,8 +1466,7 @@
             if (!t) return;
             
             document.getElementById('configPid').value = pid;
-            document.getElementById('configTargetName').textContent = t.alias || t.name || 'PID:' + pid;
-            document.getElementById('configAlias').value = t.alias || '';
+            document.getElementById('configTargetName').textContent = t.name || 'PID:' + pid;
             document.getElementById('configAutoRestart').checked = t.auto_restart || false;
             // 如果没有设置重启命令，自动填充 cmdline
             document.getElementById('configRestartCmd').value = t.restart_cmd || t.cmdline || '';
@@ -1445,7 +1491,6 @@
             const config = {
                 pid: pid,
                 name: t.name,
-                alias: document.getElementById('configAlias').value.trim(),
                 auto_restart: document.getElementById('configAutoRestart').checked,
                 restart_cmd: document.getElementById('configRestartCmd').value,
                 cpu_threshold: parseFloat(document.getElementById('configCpuThreshold').value) || 0,
