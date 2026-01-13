@@ -7,15 +7,32 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 	"monitor-agent/types"
 )
 
-// 磁盘 IO 采样状态
+// 磁盘 IO 采样状态（增强版）
 type ioSample struct {
-	totalBytes uint64
+	readBytes  uint64
+	writeBytes uint64
+	readCount  uint64
+	writeCount uint64
 	sampleTime time.Time
-	lastRate   float64
+	// 上次计算的速率
+	lastReadRate  float64
+	lastWriteRate float64
+	lastReadOps   float64
+	lastWriteOps  float64
+}
+
+// 网络采样状态
+type netSample struct {
+	bytesRecv  uint64
+	bytesSent  uint64
+	sampleTime time.Time
+	recvRate   float64
+	sendRate   float64
 }
 
 // commonProvider 通用 provider 实现
@@ -27,10 +44,15 @@ type commonProvider struct {
 	sysCPUMu      sync.RWMutex
 	sysCPUPercent float64
 
+	// 网络采样
+	netSampleMu sync.RWMutex
+	netSample   *netSample
+
 	// 平台特定函数
 	matchProcessName func(procName, targetName string) bool
 	executeCommand   func(cmd string) error
 	formatCmdline    func(exe string) string
+	getHandleCount   func(pid int32) int32 // 可选，Windows 专用
 }
 
 // newCommonProvider 创建通用 provider
@@ -38,26 +60,65 @@ func newCommonProvider(
 	matchName func(procName, targetName string) bool,
 	execCmd func(cmd string) error,
 	fmtCmdline func(exe string) string,
+	getHandles func(pid int32) int32,
 ) *commonProvider {
 	p := &commonProvider{
 		ioSamples:        make(map[int32]*ioSample),
 		matchProcessName: matchName,
 		executeCommand:   execCmd,
 		formatCmdline:    fmtCmdline,
+		getHandleCount:   getHandles,
 	}
-	go p.sampleSystemCPU()
+	go p.sampleSystemMetrics()
 	return p
 }
 
-// sampleSystemCPU 后台定时采集系统 CPU，避免阻塞主循环
-func (p *commonProvider) sampleSystemCPU() {
+// sampleSystemMetrics 后台定时采集系统 CPU 和网络
+func (p *commonProvider) sampleSystemMetrics() {
 	for {
+		// CPU 采样
 		cpuPercent, _ := cpu.Percent(time.Second, false)
 		if len(cpuPercent) > 0 {
 			p.sysCPUMu.Lock()
 			p.sysCPUPercent = cpuPercent[0]
 			p.sysCPUMu.Unlock()
 		}
+
+		// 网络采样
+		p.sampleNetwork()
+	}
+}
+
+// sampleNetwork 采集网络流量
+func (p *commonProvider) sampleNetwork() {
+	counters, err := net.IOCounters(false) // false = 汇总所有网卡
+	if err != nil || len(counters) == 0 {
+		return
+	}
+
+	now := time.Now()
+	totalRecv := counters[0].BytesRecv
+	totalSent := counters[0].BytesSent
+
+	p.netSampleMu.Lock()
+	defer p.netSampleMu.Unlock()
+
+	if p.netSample == nil {
+		p.netSample = &netSample{
+			bytesRecv:  totalRecv,
+			bytesSent:  totalSent,
+			sampleTime: now,
+		}
+		return
+	}
+
+	deltaTime := now.Sub(p.netSample.sampleTime).Seconds()
+	if deltaTime > 0.1 {
+		p.netSample.recvRate = float64(totalRecv-p.netSample.bytesRecv) / deltaTime
+		p.netSample.sendRate = float64(totalSent-p.netSample.bytesSent) / deltaTime
+		p.netSample.bytesRecv = totalRecv
+		p.netSample.bytesSent = totalSent
+		p.netSample.sampleTime = now
 	}
 }
 
@@ -133,8 +194,8 @@ func (p *commonProvider) ExecuteRestart(cmd string) error {
 	return p.executeCommand(cmd)
 }
 
-// calcDiskIORate 计算磁盘 IO 速率 (B/s)
-func (p *commonProvider) calcDiskIORate(pid int32, currentTotal uint64) float64 {
+// calcDiskIO 计算磁盘 IO 速率和次数
+func (p *commonProvider) calcDiskIO(pid int32, readBytes, writeBytes, readCount, writeCount uint64) (readRate, writeRate, readOps, writeOps float64) {
 	now := time.Now()
 
 	p.ioSamplesMu.Lock()
@@ -143,26 +204,36 @@ func (p *commonProvider) calcDiskIORate(pid int32, currentTotal uint64) float64 
 	sample, exists := p.ioSamples[pid]
 	if !exists {
 		p.ioSamples[pid] = &ioSample{
-			totalBytes: currentTotal,
+			readBytes:  readBytes,
+			writeBytes: writeBytes,
+			readCount:  readCount,
+			writeCount: writeCount,
 			sampleTime: now,
-			lastRate:   0,
 		}
-		return 0
+		return 0, 0, 0, 0
 	}
 
 	deltaTime := now.Sub(sample.sampleTime).Seconds()
 	if deltaTime < 0.1 {
-		return sample.lastRate
+		return sample.lastReadRate, sample.lastWriteRate, sample.lastReadOps, sample.lastWriteOps
 	}
 
-	deltaBytes := currentTotal - sample.totalBytes
-	rate := float64(deltaBytes) / deltaTime
+	readRate = float64(readBytes-sample.readBytes) / deltaTime
+	writeRate = float64(writeBytes-sample.writeBytes) / deltaTime
+	readOps = float64(readCount-sample.readCount) / deltaTime
+	writeOps = float64(writeCount-sample.writeCount) / deltaTime
 
-	sample.totalBytes = currentTotal
+	sample.readBytes = readBytes
+	sample.writeBytes = writeBytes
+	sample.readCount = readCount
+	sample.writeCount = writeCount
 	sample.sampleTime = now
-	sample.lastRate = rate
+	sample.lastReadRate = readRate
+	sample.lastWriteRate = writeRate
+	sample.lastReadOps = readOps
+	sample.lastWriteOps = writeOps
 
-	return rate
+	return readRate, writeRate, readOps, writeOps
 }
 
 func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
@@ -185,6 +256,16 @@ func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 		cmdline, _ := proc.Cmdline()
 		ioCounters, _ := proc.IOCounters()
 		createTime, _ := proc.CreateTime()
+		
+		// 获取句柄数/文件描述符数
+		var numFDs int32
+		if p.getHandleCount != nil {
+			// Windows: 使用平台特定的 GetProcessHandleCount
+			numFDs = p.getHandleCount(proc.Pid)
+		} else {
+			// Linux: 使用 gopsutil 的 NumFDs
+			numFDs, _ = proc.NumFDs()
+		}
 
 		// 如果 cmdline 为空，尝试获取可执行文件路径
 		if cmdline == "" {
@@ -193,20 +274,25 @@ func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 			}
 		}
 
-		var rss uint64
+		var rss, vms uint64
 		if memInfo != nil {
 			rss = memInfo.RSS
+			vms = memInfo.VMS
 		}
 		statusStr := ""
 		if len(status) > 0 {
 			statusStr = status[0]
 		}
 
-		// 计算磁盘 IO 速率
-		var diskIO float64
+		// 计算磁盘 IO 速率和次数
+		var diskIO, diskReadRate, diskWriteRate, diskReadOps, diskWriteOps float64
 		if ioCounters != nil {
-			totalIO := ioCounters.ReadBytes + ioCounters.WriteBytes
-			diskIO = p.calcDiskIORate(proc.Pid, totalIO)
+			diskReadRate, diskWriteRate, diskReadOps, diskWriteOps = p.calcDiskIO(
+				proc.Pid,
+				ioCounters.ReadBytes, ioCounters.WriteBytes,
+				ioCounters.ReadCount, ioCounters.WriteCount,
+			)
+			diskIO = diskReadRate + diskWriteRate // 兼容旧字段
 		}
 
 		// 计算已运行时间（秒）
@@ -216,15 +302,21 @@ func (p *commonProvider) ListAllProcesses() ([]types.ProcessInfo, error) {
 		}
 
 		result = append(result, types.ProcessInfo{
-			PID:      proc.Pid,
-			Name:     name,
-			CPUPct:   cpuPct,
-			RSSBytes: rss,
-			Status:   statusStr,
-			Username: username,
-			DiskIO:   diskIO,
-			Uptime:   uptime,
-			Cmdline:  cmdline,
+			PID:           proc.Pid,
+			Name:          name,
+			CPUPct:        cpuPct,
+			RSSBytes:      rss,
+			VMS:           vms,
+			Status:        statusStr,
+			Username:      username,
+			NumFDs:        numFDs,
+			DiskIO:        diskIO,
+			DiskReadRate:  diskReadRate,
+			DiskWriteRate: diskWriteRate,
+			DiskReadOps:   diskReadOps,
+			DiskWriteOps:  diskWriteOps,
+			Uptime:        uptime,
+			Cmdline:       cmdline,
 		})
 	}
 
@@ -247,10 +339,26 @@ func (p *commonProvider) GetSystemMetrics() (*types.SystemMetrics, error) {
 	cpuPct := p.sysCPUPercent
 	p.sysCPUMu.RUnlock()
 
+	// 获取网络流量
+	p.netSampleMu.RLock()
+	var netRecv, netSent uint64
+	var netRecvRate, netSendRate float64
+	if p.netSample != nil {
+		netRecv = p.netSample.bytesRecv
+		netSent = p.netSample.bytesSent
+		netRecvRate = p.netSample.recvRate
+		netSendRate = p.netSample.sendRate
+	}
+	p.netSampleMu.RUnlock()
+
 	return &types.SystemMetrics{
 		CPUPercent:    cpuPct,
 		MemoryTotal:   memInfo.Total,
 		MemoryUsed:    memInfo.Used,
 		MemoryPercent: float64(memInfo.Used) / float64(memInfo.Total) * 100,
+		NetBytesRecv:  netRecv,
+		NetBytesSent:  netSent,
+		NetRecvRate:   netRecvRate,
+		NetSendRate:   netSendRate,
 	}, nil
 }

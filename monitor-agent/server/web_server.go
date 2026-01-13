@@ -119,6 +119,8 @@ func (s *WebServer) handleAddTarget(w http.ResponseWriter, r *http.Request) {
 		s.errorResponse(w, 400, err.Error())
 		return
 	}
+	// 添加后自动启动监控
+	s.multiMonitor.Start()
 	s.jsonResponse(w, map[string]string{"status": "ok"})
 }
 

@@ -20,5 +20,7 @@ func New() ProcProvider {
 		func(exe string) string {
 			return exe
 		},
+		// getHandleCount: Linux 使用 gopsutil 的 NumFDs (返回 nil 使用默认实现)
+		nil,
 	)
 }
